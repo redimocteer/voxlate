@@ -73,7 +73,8 @@ class RecognitionModelTests(unittest.TestCase):
                     raise OSError('mirror unavailable')
                 path.write_bytes(b'data' if path.name == 'model.bin' else b'{}')
             with patch.dict(MODELS, asr_turbo_model=item), patch('voxlate.installer.download', side_effect=download):
-                download_model('asr_turbo_model', folder, lambda _: None)
+                with patch('voxlate.resource_terms.preserve_model_terms'):
+                    download_model('asr_turbo_model', folder, lambda _: None)
                 self.assertFalse(missing_files('asr_turbo_model', folder))
                 (Path(folder) / 'model.bin').write_bytes(b'x')
                 self.assertEqual(missing_files('asr_turbo_model', folder), ['model.bin'])

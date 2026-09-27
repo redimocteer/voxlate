@@ -7,6 +7,7 @@ root = Path(SPECPATH)
 datas = [(str(root / name), ".") for name in
          ("config.json", "requirements.txt", "requirements-prepare.txt", "README.md", "README.en.md", "TODO.md", "LICENSE", "THIRD_PARTY_NOTICES.md")]
 datas.append((str(root / "assets/voxlate.ico"), "assets"))
+datas += [(str(path), 'assets/legal') for path in (root / 'assets/legal').glob('*') if path.is_file()]
 datas += [(str(path), "docs/images") for path in (root / "docs/images").glob("*.png")]
 datas += [(str(path), "docs") for path in (root / "docs").glob("*.md")]
 for folder in ("voxlate", "scripts"):

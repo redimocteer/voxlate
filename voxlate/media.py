@@ -127,8 +127,8 @@ class Media:
             inputs += ["-i", original_audio]
         inputs += ["-map", "0:V:0", "-map", "1:a:0"]
         if original_audio:
-            inputs += ["-map", "2:a:0", "-metadata:s:a:0", "title=" + self.target_language['name'] + "配音",
-                       "-metadata:s:a:0", "handler_name=Voxlate Dub",
+            inputs += ["-map", "2:a:0", "-metadata:s:a:0", "title=" + self.target_language['name'] + " AI 配音",
+                       "-metadata:s:a:0", "handler_name=Voxlate AI Dub",
                        "-metadata:s:a:0", "language=" + self.target_language['iso3'], "-disposition:a:0", "default",
                        "-metadata:s:a:1", "title=原声", "-metadata:s:a:1", "handler_name=Voxlate Original",
                        "-metadata:s:a:1", "language=" + self.source_language['iso3'], "-disposition:a:1", "0"]

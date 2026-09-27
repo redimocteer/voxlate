@@ -120,7 +120,7 @@ class InstallerTests(unittest.TestCase):
         with TestDirectory() as folder:
             path, _ = prepare_settings(folder)
             installer = Installer(load_config(path), path, lambda _: None)
-            with patch.object(installer, "venv", side_effect=AssertionError("unneeded environment")), patch.object(installer, "pip") as pip, patch("voxlate.installer.download") as download:
+            with patch.object(installer, "venv", side_effect=AssertionError("unneeded environment")), patch.object(installer, "pip") as pip, patch("voxlate.installer.download") as download, patch('voxlate.installer.preserve_model_terms'):
                 installer.native_translation("hy7_model")
             pip.assert_not_called()
             self.assertIn("Hy-MT2-7B-GGUF", download.call_args.args[0])
@@ -137,7 +137,7 @@ class InstallerTests(unittest.TestCase):
                 installer.emit("下载 model.bin：100 MB / 100 MB（100%）")
                 installer.phase(0.1, "镜像重试")
             with patch.object(installer, "models", side_effect=prepare), patch.object(installer, "recognition_model", side_effect=prepare):
-                installer.install(["asr_turbo_model", "tts_model"])
+                installer.install(["asr_turbo_model", "tts_model"], accepted_terms=True)
             values = [item["percent"] for item in updates]
             self.assertEqual(values, sorted(values))
             self.assertEqual(values[-1], 95)
@@ -251,7 +251,7 @@ class InstallerTests(unittest.TestCase):
                 installer.cfg["ffmpeg"] = str(Path(folder) / "new-ffmpeg.exe")
             with patch.object(installer, "ffmpeg", fake_ffmpeg), patch.object(installer, "environment", side_effect=RuntimeError("offline")):
                 with self.assertRaisesRegex(VoxlateError, "识别与翻译环境准备未完成"):
-                    installer.install(["ffmpeg", "runtime"])
+                    installer.install(["ffmpeg", "runtime"], accepted_terms=True)
             self.assertEqual(load_config(path)["ffmpeg"], str(Path(folder) / "new-ffmpeg.exe"))
 
     def test_cancel_installer_process_without_waiting_for_completion(self):

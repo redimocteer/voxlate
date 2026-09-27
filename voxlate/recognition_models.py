@@ -67,10 +67,12 @@ def missing_files(key, directory):
 
 
 def download_model(key, directory, emit, mirrors=True, progress=None):
+    from .resource_terms import preserve_model_terms
     from .installer import download, HF_MIRROR, HF_OFFICIAL
     from .media import check_cancelled
     from .common import VoxlateError
     item, directory = MODELS[key], Path(directory)
+    preserve_model_terms(key, directory, emit)
     total = sum(size for size, _ in item["files"].values())
     completed = 0
     for name, (size, checksum) in item["files"].items():

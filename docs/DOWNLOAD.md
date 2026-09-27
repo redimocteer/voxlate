@@ -2,6 +2,10 @@
 
 当前版本：[v0.1.0-beta.1 · Windows 测试版](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.1)。自动结果仍需校对，请先用短片测试。
 
+程序包不含模型及外部推理环境。准备这些资源之前，请先阅读[下载选择与上游条款](RESOURCE_DOWNLOADS.md)；不接受的资源不必下载。开发分支新增的逐项下载确认、许可留存及导出说明尚未包含在此旧版 EXE 中。
+
+桌面播放器使用 Qt/PySide6/Shiboken（LGPL）及 FFmpeg 播放库（LGPL 2.1-or-later），声明与对应源码入口见[二进制分发记录](BINARY_DISTRIBUTION.md)。
+
 ## 下载哪个文件
 
 打开 [Voxlate Releases](https://github.com/redimocteer/voxlate/releases)，查看标有 **Pre-release** 的测试版。

@@ -750,6 +750,8 @@ class VideoDubPipeline:
 
     def export_audio(self, video, output, audio, background, duration, sep_key):
         segments, cfg = self.project['segments'], self.cfg
+        from .export_notices import write_export_notices
+        write_export_notices(self.work, cfg['tts']['model_path'])
         input_key = self.project['input_hash']
         timeline = self.work / "dubbing.wav"
         mix = self.work / "final_audio.wav"
@@ -761,8 +763,9 @@ class VideoDubPipeline:
         self.stage("mix", mix_key, [mix], lambda: self.media.mix(background, timeline, mix, duration,
                    cfg["audio"]["background_gain"], cfg["audio"]["dubbing_gain"],
                    original=audio, original_intervals=original_intervals))
-        self.stage("mux", digest("dual-audio-v1", input_key, mix_key, str(output)), [output],
+        self.stage("mux", digest("dual-audio-ai-label-v2", input_key, mix_key, str(output)), [output],
                    lambda: self.media.mux(video, mix, output, duration, original_audio=audio))
         self.project["output"] = str(output)
+        logging.info('分享前请核对授权与 AI 标识，并保留项目 export-notices 中的说明和适用协议。')
         self.save()
         return output

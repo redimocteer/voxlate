@@ -862,7 +862,10 @@ class GuiTests(unittest.TestCase):
     def test_install_button_runs_missing_stages_and_rechecks(self):
         missing = [ResourceStatus("asr_turbo_model", "英文识别模型", False, "missing", "重新检查")]
         ready = [ResourceStatus("asr_turbo_model", "英文识别模型", True, "ready", "重新检查")]
-        with patch("voxlate.gui.check_resources", side_effect=[missing, ready]) as check, patch("voxlate.gui.Installer") as installer:
+        self.window.resources = missing
+        with patch("voxlate.gui.check_resources", side_effect=[missing, ready]) as check, patch("voxlate.gui.Installer") as installer, patch('voxlate.gui.ResourceTermsDialog') as terms:
+            terms.return_value.exec.return_value = 1
+            terms.return_value.selected_stages.return_value = ['asr_turbo_model']
             installer.return_value.install.return_value = self.window.cfg
             self.window.install_all_button.click()
             self.assertTrue(self.window.install_cancel_button.isEnabled())
@@ -871,15 +874,42 @@ class GuiTests(unittest.TestCase):
                 self.app.processEvents()
                 time.sleep(0.01)
             self.assertIsNone(self.window.task)
-            installer.return_value.install.assert_called_once_with(["asr_turbo_model"])
+            installer.return_value.install.assert_called_once_with(["asr_turbo_model"], accepted_terms=True)
             self.assertEqual(check.call_count, 2)
             self.assertEqual(check.call_args_list[-1].kwargs["keys"], {"asr_turbo_model"})
             self.assertTrue(self.window.resources[0].ready)
             self.assertFalse(self.window.install_cancel_button.isEnabled())
 
+    def test_declining_download_does_not_start_installer_or_network_check(self):
+        self.window.resources = [ResourceStatus('tts_model', 'TTS', False, '', '')]
+        with patch('voxlate.gui.ResourceTermsDialog') as terms, patch('voxlate.gui.Installer') as installer, patch('voxlate.gui.check_resources') as check:
+            terms.return_value.exec.return_value = 0
+            self.window.install_resources()
+            installer.assert_not_called()
+            check.assert_not_called()
+            self.assertIsNone(self.window.task)
+
+    def test_unselected_resources_are_not_downloaded_after_recheck(self):
+        missing = [ResourceStatus(key, key, False, '', '') for key in ('hy7_model', 'tts_model')]
+        self.window.resources = missing
+        with patch('voxlate.gui.ResourceTermsDialog') as terms, patch('voxlate.gui.Installer') as installer, patch('voxlate.gui.check_resources', return_value=missing):
+            terms.return_value.exec.return_value = 1
+            terms.return_value.selected_stages.return_value = ['hy7_model']
+            installer.return_value.install.return_value = self.window.cfg
+            self.window.install_resources()
+            deadline = time.monotonic() + 5
+            while self.window.task and time.monotonic() < deadline:
+                self.app.processEvents()
+                time.sleep(0.01)
+            self.assertIsNone(self.window.task)
+            installer.return_value.install.assert_called_once_with(['hy7_model'], accepted_terms=True)
+
     def test_install_failure_restores_idle_and_keeps_diagnostic(self):
         missing = [ResourceStatus("runtime", "运行环境", False, "missing", "重新检查")]
-        with patch("voxlate.gui.check_resources", return_value=missing), patch("voxlate.gui.Installer") as installer, patch.object(QMessageBox, "warning"):
+        self.window.resources = missing
+        with patch("voxlate.gui.check_resources", return_value=missing), patch("voxlate.gui.Installer") as installer, patch.object(QMessageBox, "warning"), patch('voxlate.gui.ResourceTermsDialog') as terms:
+            terms.return_value.exec.return_value = 1
+            terms.return_value.selected_stages.return_value = ['runtime']
             installer.return_value.install.side_effect = VoxlateError("测试下载失败，重试")
             self.window.install_all_button.click()
             deadline = time.monotonic() + 5

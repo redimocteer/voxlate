@@ -22,6 +22,7 @@ from .runtime import bundle_root, external_code_root, external_env, spawn_extern
 from .resources import CATALOG, remember_root, format_bytes, folder_size, is_link
 from .translation_models import MODELS, selected_key, select_model, ENGINE_URL, ENGINE_HASH
 from .recognition_models import MODELS as ASR_MODELS, selected_key as selected_asr_key, select_model as select_asr_model, download_model as download_asr
+from .resource_terms import preserve_model_terms
 
 UV_VERSION = "0.12.18"
 UV_SHA256 = "cae6a3bc25239f83dffb467a4b180508d9da23986c04639ebfa44e43e6a84bff"
@@ -427,6 +428,21 @@ class Installer:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
             self.cfg[name] = str(target)
+        # Keep the upstream notices/docs with the binaries, not only in a
+        # deletable download cache. Do not redistribute this external tool.
+        source_root = source.parent.parent if source.parent.name.lower() == 'bin' else source.parent
+        if not source_root.resolve().is_relative_to(folder.resolve()):
+            raise VoxlateError('FFmpeg 归档结构不正确，未复制额外文件。')
+        notices = self.root / 'tools/ffmpeg/upstream'
+        notices.mkdir(parents=True, exist_ok=True)
+        for path in source_root.rglob('*'):
+            if path.is_file() and (path.relative_to(source_root).parts[0].lower() == 'doc'
+                    or re.match(r'(license|licence|copying|copyright|notice|readme)', path.name, re.I)):
+                destination = notices / path.relative_to(source_root)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, destination)
+        write_json(notices / 'DOWNLOAD.json', {'url': base, 'sha256': checksum,
+                   'source_and_build_information': 'https://www.gyan.dev/ffmpeg/builds/'})
 
     def environment(self, kind):
         try:
@@ -489,7 +505,8 @@ class Installer:
         self.phase(0.02, "准备模型下载环境")
         python = self.venv(self.root / "prepare-env/Scripts/python.exe")
         self.pip(python, "huggingface-hub>=0.28,<1")
-        args = [python, "-u", external_code_root() / "scripts/prepare_models.py", kind, "--config", self.config_path]
+        args = [python, "-u", external_code_root() / "scripts/prepare_models.py", kind, "--config", self.config_path,
+                '--accept-resource-terms']
         self.phase(0.15, "下载" + TITLES[kind + "_model"])
         self._download_range = (0.15, 0.9)
         mirror_env = dict(self.env, HF_ENDPOINT=HF_MIRROR) if kind != "separator" else None
@@ -507,6 +524,7 @@ class Installer:
             return
         item = MODELS[key]
         target = self.root / item["relative"] / item["filename"]
+        preserve_model_terms(key, target.parent, self.emit)
         endpoints = [HF_MIRROR, HF_OFFICIAL] if self.cfg.get("try_mirrors", True) else [HF_OFFICIAL]
         for index, endpoint in enumerate(endpoints):
             check_cancelled()
@@ -527,7 +545,9 @@ class Installer:
         download_asr(key, self.root / ASR_MODELS[key]["relative"], self.emit,
                      mirrors=self.cfg.get("try_mirrors", True), progress=progress)
 
-    def install(self, stages):
+    def install(self, stages, *, accepted_terms=False):
+        if not accepted_terms:
+            raise VoxlateError('请先查看并确认第三方资源条款，再选择下载。')
         remember_root(self.config_path, self.root)
         self.cfg["resource_root"] = str(self.root)
         write_json(self.config_path, self.cfg)

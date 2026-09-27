@@ -38,6 +38,7 @@ from .role_dialog import RoleDialog
 from .ui_controls import CenteredComboBox
 from .sentence_table import SentenceTable
 from .audio_tracks import read_audio_tracks, selected_track, track_suffix
+from .resource_terms_dialog import ResourceTermsDialog
 
 
 class ReferenceSentenceBox(QSpinBox):
@@ -707,6 +708,16 @@ class MainWindow(QMainWindow):
         track = cfg.pop('audio_track', 0)
         track_count = cfg.pop('audio_track_count', 0)
         cached = copy.deepcopy(self.resources)
+        proposed = planned_stages(cached, selected)
+        if not proposed:
+            self.notify('所需资源已经就绪，无需下载；可点击「检查」重新检测。')
+            return
+        dialog = ResourceTermsDialog(proposed, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        approved = set(dialog.selected_stages())
+        if not approved:
+            return
         affected = {selected} if selected else {r.key for r in cached if not r.ready}
         self.inspect_after_keys = affected
         self.inspect_after_size_keys = affected | {"download_cache", "prepare_env", "python", "python_bin", "uv"}
@@ -717,11 +728,11 @@ class MainWindow(QMainWindow):
         def action(emit, progress):
             emit("确认缺失资源…")
             current = check_resources(cfg, self.config_path, keys=affected, cached=cached, size_keys=set())
-            stages = planned_stages(current, selected)
+            stages = [stage for stage in planned_stages(current, selected) if stage in approved]
             # Keep the failure/cancellation refresh limited to the attempted resources.
             affected.update(stages)
             if stages:
-                updated = Installer(cfg, self.config_path, emit, progress=progress).install(stages)
+                updated = Installer(cfg, self.config_path, emit, progress=progress).install(stages, accepted_terms=True)
             else:
                 emit("所需资源已经就绪，无需下载")
                 updated = cfg

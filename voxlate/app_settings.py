@@ -39,6 +39,10 @@ def prepare_settings(data_dir):
     for name in ("requirements.txt", "requirements-prepare.txt", "README.md", "README.en.md", "TODO.md", "LICENSE", "THIRD_PARTY_NOTICES.md"):
         shutil.copy2(source / name, support / name)
     (support / "docs").mkdir(parents=True, exist_ok=True)
+    (support / 'assets/legal').mkdir(parents=True, exist_ok=True)
+    for path in (source / 'assets/legal').glob('*'):
+        if path.is_file():
+            shutil.copy2(path, support / 'assets/legal' / path.name)
     for path in (source / "docs").glob("*.md"):
         shutil.copy2(path, support / "docs" / path.name)
     for path in (source / "docs/images").glob("*.png"):

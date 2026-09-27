@@ -179,6 +179,9 @@ def main():
     files = [dict(path=p.relative_to(stage).as_posix(), bytes=p.stat().st_size, sha256=sha(p))
              for p in sorted(stage.rglob('*')) if p.is_file()]
     write_json(stage / 'FILE_MANIFEST.json', files)
+    # The release must not silently become a model/runtime or user-data bundle.
+    from check_public_package import audit_release_tree
+    audit_release_tree(stage)
     zip_path = output / (stage.name + '.zip')
     with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for path in sorted(stage.rglob('*')):
