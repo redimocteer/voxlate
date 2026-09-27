@@ -136,8 +136,9 @@ def load_config(path):
         if not isinstance(value, (int, float)) or not 0 <= value <= 4:
             raise VoxlateError(f"{key} 必须在 0 到 4 之间")
     cfg.setdefault("source_lang", "en")
-    if cfg["source_lang"] not in ("en", "ja"):
-        raise VoxlateError("仅支持英文或日文翻译成中文")
+    cfg.setdefault("target_lang", "zh")
+    from .languages import direction
+    direction(cfg)
     if cfg['translator'].get('model_type') == 'hy_mt2_1b':
         from .translation_models import MODELS
         item = MODELS['hy7_model']

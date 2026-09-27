@@ -63,7 +63,7 @@ class TTSProgress:
         state = self.state
         completed = max(self.cached, min(self.total, int(state.get("completed", self.cached))))
         percent = int(100 * completed / self.total) if self.total else 100
-        detail = f"中文配音 {completed}/{self.total} 句（{percent}%）"
+        detail = f"配音 {completed}/{self.total} 句（{percent}%）"
         if state["phase"] == "loading":
             detail += " · 正在加载音色克隆模型（IndexTTS 2.5）"
         elif state['phase'] == 'preparing':

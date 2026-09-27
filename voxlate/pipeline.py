@@ -22,6 +22,7 @@ from .dubbing_state import voice_key, sentence_ready, voice_selection, select_vo
 from .model_lifecycle import model_name
 from .roles import ensure_roles, validate_roles, reference_segment, apply_automatic_voice_mode
 from .audio_tracks import selected_track
+from .languages import direction, direction_label, LANGUAGES, translation_settings, speech_settings
 
 LOG = logging.getLogger("voxlate")
 CACHE_VERSION = 1
@@ -80,11 +81,10 @@ def validate_segments(segments, duration):
 class VideoDubPipeline:
     def __init__(self, config, runner=None, tts_session=None):
         self.cfg = copy.deepcopy(config)
-        self.source_lang = config.get("source_lang", "en")
-        if self.source_lang not in ("en", "ja"):
-            raise VoxlateError("仅支持英文或日文翻译成中文")
+        self.source_lang, self.target_lang = direction(config)
         self.cfg["asr"]["language"] = self.source_lang
-        self.cfg["translator"]["source_lang"] = self.source_lang
+        self.cfg["translator"] = translation_settings(config)
+        self.cfg["tts"] = speech_settings(config)
         self.media = Media(config)
         self.runner = runner or self.run_worker
         self.tts_session = tts_session
@@ -283,14 +283,14 @@ class VideoDubPipeline:
         input_key = file_hash(video)
         project_path = self.work / "project.json"
         self.project = read_json(project_path) if project_path.exists() else {
-            "schema_version": 1, "name": "voxlate", "source_lang": self.source_lang, "target_lang": "zh",
+            "schema_version": 1, "name": "voxlate", "source_lang": self.source_lang, "target_lang": self.target_lang,
             "input_hash": input_key, "input": str(video), "audio_track": selected_track(self.cfg), "stages": {}, "segments": []}
         previous_project = copy.deepcopy(self.project) if self.force_recognition and project_path.exists() else None
         self.defer_project_save = previous_project is not None
         if self.project.get("input_hash") != input_key or self.project.get("schema_version") != 1:
             raise VoxlateError("项目与视频或版本不匹配，请指定新的 --work-dir")
-        if self.project.get("source_lang", "en") != self.source_lang:
-            raise VoxlateError("源语言与项目不同，请新建项目，原有译文会保留。")
+        if direction(self.project) != (self.source_lang, self.target_lang):
+            raise VoxlateError("语言方向与项目不同，请切换到对应方向的项目，原有译文和配音会保留。")
         track = selected_track(self.cfg)
         if selected_track(self.project) != track:
             raise VoxlateError('音轨与项目不同，请切换到对应音轨的项目。')
@@ -363,7 +363,7 @@ class VideoDubPipeline:
                    lambda: self.runner("separator", {"audio": str(audio), "directory": str(self.work / "separated")}))
         self.project['separator_model'] = cfg['separator']['model']
         if self.force_recognition or self.project.get("asr_key") != asr_key:
-            LOG.info("开始%s识别", "日文" if self.source_lang == "ja" else "英文")
+            LOG.info("开始%s识别", LANGUAGES[self.source_lang]['name'])
             raw = self.runner("asr", {"audio": str(vocals)})
             segments = []
             previous = 0.0
@@ -371,7 +371,7 @@ class VideoDubPipeline:
                 s["start"] = max(previous, 0, s["start"])
                 s["end"] = min(duration, s["end"])
                 if s["end"] > s["start"]:
-                    s.update(source_lang=self.source_lang, target_lang="zh")
+                    s.update(source_lang=self.source_lang, target_lang=self.target_lang)
                     segments.append(s)
                     previous = s["end"]
             if self.force_recognition:
@@ -416,7 +416,7 @@ class VideoDubPipeline:
         if pending and self.require_translated:
             raise VoxlateError("译文需要更新，请先点击「翻译」，查看译文后再生成配音。")
         if pending:
-            LOG.info("本地%s翻译：%d 句", "日中" if self.source_lang == "ja" else "英中", len(pending))
+            LOG.info("本地翻译（%s）：%d 句", direction_label(self.source_lang, self.target_lang), len(pending))
             translations = self.runner("translator", {"texts": [s["source_text"] for s in pending],
                 "context": [s["source_text"] for s in segments], "indices": [segments.index(s) for s in pending]})
             if len(translations) != len(pending) or any(not t.strip() for t in translations):
@@ -685,7 +685,7 @@ class VideoDubPipeline:
         if len(active) != len(segments):
             LOG.info("已选配音 %d/%d 句；未勾选句子保留原声", len(active), len(segments))
         if missing:
-            LOG.info("克隆中文音色：%d 句；其他句子使用缓存", len(missing))
+            LOG.info("生成%s配音：%d 句；其他句子使用缓存", LANGUAGES[self.target_lang]['name'], len(missing))
             self.runner("tts", {"reference": str(reference) if reference else '', "segments": missing, "total": len(chosen)})
         LOG.info("正在对齐配音…", extra={"voxlate_progress": {"stage": "processing"}})
         for segment in chosen:

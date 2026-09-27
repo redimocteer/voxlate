@@ -142,7 +142,8 @@ def run_job(request, engine_cache=None):
         generation_started = time.perf_counter()
         for i, segment in enumerate(pending, 1):
             report_tts(progress, "generating", completed, total, segment["id"])
-            print(f"中文配音 {i}/{len(pending)}", flush=True)
+            from voxlate.languages import LANGUAGES
+            print(f"{LANGUAGES[cfg.get('target_lang', 'zh')]['name']}配音 {i}/{len(pending)}", flush=True)
             engine.generate(segment["target_text"], segment.get('speaker_reference_audio') or job["reference"], segment["tts_audio"],
                             segment["source_audio"] if cfg["emotion_reference"] else None)
             completed += 1

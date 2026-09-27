@@ -167,7 +167,7 @@ def check_resources(cfg, config_path, report=None, probe=probe_runtime, *, keys=
         model = root / item["relative"] / item["filename"]
         ready = model.is_file() and model.stat().st_size == item["size"]
         add(ResourceStatus(key, item["title"], ready, "模型文件已就绪。" if ready else "模型尚未下载完整。",
-            "英、日直接译成中文，自动参考前后对白。首次运行会验证兼容性。", required=selected_key(cfg) == key))
+            "中、英、日互译，自动参考前后对白。首次运行会验证兼容性。", required=selected_key(cfg) == key))
     if quick:
         return measure_resources(cfg, config_path, results, keys=set(),
                                  cached=cached if isinstance(cached, ResourceInspection) else ResourceInspection([], {}, {}, ""))

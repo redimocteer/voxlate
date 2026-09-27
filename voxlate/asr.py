@@ -75,8 +75,8 @@ def transcribe(audio, config, work_dir=None):
                          cpu_threads=config["cpu_threads"], local_files_only=True)
     model_event(work_dir, f'识别模型已加载（{name}）')
     language = config.get("language", "en")
-    if language == "ja" and not model.is_multilingual:
-        raise VoxlateError("日文识别需要多语言模型，请下载「英日识别模型」。")
+    if language != "en" and not model.model.is_multilingual:
+        raise VoxlateError("中文和日文识别需要多语言模型，请准备 Whisper v3 或 turbo。")
     segments, _ = model.transcribe(str(audio), language=language, task="transcribe",
                                   beam_size=config["beam_size"], vad_filter=True,
                                   condition_on_previous_text=False, word_timestamps=True)

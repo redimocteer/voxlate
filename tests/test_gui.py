@@ -17,6 +17,23 @@ from voxlate.runtime import worker_command
 
 
 class ResourceTests(unittest.TestCase):
+    def test_development_settings_reuse_resources_without_changing_release_settings(self):
+        from voxlate.app_settings import default_data_dir
+        with TestDirectory() as folder, patch.dict(os.environ, LOCALAPPDATA=folder), \
+             patch('voxlate.app_settings.__version__', '0.2.0-dev'):
+            stable, _ = prepare_settings(Path(folder)/'voxlate')
+            before = stable.read_bytes()
+            cfg = load_config(stable)
+            development, _ = prepare_settings(default_data_dir())
+            self.assertEqual(development.parent.name, 'voxlate-dev')
+            self.assertEqual(load_config(development)['tts']['model_path'], cfg['tts']['model_path'])
+            modified = read_json(development)
+            modified.update(source_lang='zh', target_lang='ja')
+            write_json(development, modified)
+            self.assertEqual(stable.read_bytes(), before)
+            self.assertEqual(prepare_settings(default_data_dir())[0], development)
+            self.assertEqual(load_config(development)['target_lang'], 'ja')
+
     def test_targeted_model_check_reuses_environments_and_reports_only_changed_item(self):
         with TestDirectory() as folder:
             path, _ = prepare_settings(folder)
@@ -137,7 +154,7 @@ class GuiTests(unittest.TestCase):
         self.window.video_selected(video)
         first = self.window.project_path
         self.assertTrue(first.parent.name.endswith('-audio-1'))
-        self.assertEqual(self.window.output_path.name, '双语.audio-1.zh.mp4')
+        self.assertEqual(self.window.output_path.name, '双语.audio-1.en-zh.mp4')
         project = dict(schema_version=1, name='voxlate', input=str(video), duration=2,
             segments=[dict(id=1,start=0,end=1,source_text='Hello',target_text='你好')])
         write_json(first, project)  # Legacy projects implicitly used audio track 1.
@@ -148,7 +165,7 @@ class GuiTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertEqual(first.read_bytes(), before)
         self.assertIsNone(self.window.project)
-        self.assertEqual(self.window.output_path.name, '双语.audio-2.zh.mp4')
+        self.assertEqual(self.window.output_path.name, '双语.audio-2.en-zh.mp4')
         self.assertEqual(self.window.cfg['audio_track'], 1)
         self.window.save_settings()
         self.assertEqual(self.window.cfg['audio_track'], 1)
@@ -193,7 +210,7 @@ class GuiTests(unittest.TestCase):
         before = legacy.read_bytes()
         self.window.video_selected(video)
         self.assertEqual(self.window.project_path, legacy)
-        self.assertEqual(self.window.output_path.name, 'legacy.audio-1.zh.mp4')
+        self.assertEqual(self.window.output_path.name, 'legacy.audio-1.en-zh.mp4')
         self.assertEqual(self.window.table.item(0,2).text(), '旧译文')
         self.assertEqual(legacy.read_bytes(), before)
         self.assertTrue(marker.is_file())
@@ -217,7 +234,7 @@ class GuiTests(unittest.TestCase):
         single = Path(self.directory.name)/'single.mkv'
         single.write_bytes(b'synthetic')
         self.window.video_selected(single)
-        self.assertEqual(self.window.output_path.name, 'single.zh.mp4')
+        self.assertEqual(self.window.output_path.name, 'single.en-zh.mp4')
         self.assertNotIn('-audio-', self.window.project_path.parent.name)
 
     def test_automatic_role_threshold_persists_manual_override(self):
@@ -619,8 +636,34 @@ class GuiTests(unittest.TestCase):
         self.window.dirty = True
         with patch.object(self.window, "save_translations", return_value=False):
             self.window.source_language.setCurrentIndex(0)
-        self.assertEqual(self.window.source_language.currentData(), "ja")
+        self.assertEqual(self.window.source_language.currentData(), "ja-zh")
         self.assertTrue(self.window.dirty)
+
+    def test_six_directions_update_table_output_and_restore_saved_project(self):
+        from voxlate.languages import DIRECTIONS, LANGUAGES
+        video = Path(self.directory.name)/'directions.mp4'
+        video.write_bytes(b'synthetic')
+        self.window.video_selected(str(video))
+        paths, outputs = set(), set()
+        for source, target in DIRECTIONS:
+            index = self.window.source_language.findData(f'{source}-{target}')
+            self.window.source_language.setCurrentIndex(index)
+            paths.add(self.window.project_path)
+            outputs.add(self.window.output_path)
+            self.assertEqual(self.window.cfg['target_lang'], target)
+            self.assertEqual(self.window.table.horizontalHeaderItem(2).text(), LANGUAGES[target]['name']+'译文')
+            saved = load_config(self.window.config_path)
+            self.assertEqual((saved['source_lang'], saved['target_lang']), (source, target))
+        self.assertEqual(len(paths), 6)
+        self.assertEqual(len(outputs), 6)
+        saved_path = self.window.project_path
+        write_json(saved_path, dict(schema_version=1, name='voxlate', input=str(video), duration=2,
+            source_lang='en', target_lang='ja', segments=[dict(id=1,start=0,end=1,source_text='Hello',target_text='こんにちは')]))
+        self.window.source_language.setCurrentIndex(0)
+        self.window.source_language.setCurrentIndex(self.window.source_language.findData('en-ja'))
+        self.assertEqual(self.window.project_path, saved_path)
+        self.assertEqual(self.window.table.item(0,2).text(), 'こんにちは')
+        self.assertTrue(self.window.translation_ready())
 
     def test_edit_translation_preserves_cache_keys(self):
         project_path = Path(self.directory.name) / "input.mp4.voxlate" / "project.json"
@@ -928,7 +971,7 @@ class GuiTests(unittest.TestCase):
         event = QDropEvent(QPointF(30, 30), Qt.DropAction.CopyAction, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
         self.window.dropEvent(event)
         self.assertTrue(event.isAccepted())
-        self.assertEqual(self.window.output_path, video.with_name("英文 示例.zh.mp4"))
+        self.assertEqual(self.window.output_path, video.with_name("英文 示例.en-zh.mp4"))
         self.assertEqual(self.window.video.text(), str(video))
         self.assertFalse(hasattr(self.window, "output"))
         self.assertTrue(self.window.video.isReadOnly())

@@ -1,6 +1,7 @@
 """Cheap UI checks for whether a sentence's saved audio matches its settings."""
 from pathlib import Path
 from .common import digest
+from .languages import speech_settings
 
 
 def automatic_reference(project):
@@ -40,6 +41,7 @@ def voice_selection(project):
 
 
 def voice_key(project, cfg, segment=None):
+    cfg = dict(cfg, tts=speech_settings(cfg))
     if 'voice_mode' in project:
         mode, ident = voice_selection(project)
         if mode == 'roles':

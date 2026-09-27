@@ -7,6 +7,7 @@ import stat
 from .common import VoxlateError
 from .recognition_models import MODELS, selected_key
 from .audio_tracks import selected_track, track_suffix
+from .languages import direction
 
 
 def project_root(video):
@@ -19,7 +20,10 @@ def default_project_directory(video, cfg):
     profile = 'combined' if cfg['asr'].get('combined', False) else (
         'qwen3-asr-1.7b' if selected == 'asr_qwen_model' else 'whisper-' + MODELS[selected]['size_name'])
     suffix = track_suffix(cfg, '-')
-    return project_root(video) / (cfg.get('source_lang', 'en') + '-' + profile + suffix)
+    source, target = direction(cfg)
+    # Existing Chinese-output projects keep their absolute cache paths.
+    prefix = source if target == 'zh' else f'{source}-{target}'
+    return project_root(video) / (prefix + '-' + profile + suffix)
 
 
 def existing_project_directory(video, cfg):

@@ -214,7 +214,7 @@ class VideoPlayer(QDialog):
         if len(self.player.audioTracks()) >= 2:
             self.original_track = 1
             self.original_check.setEnabled(True)
-            self.original_check.setToolTip("切换原声与中文配音")
+            self.original_check.setToolTip("切换原声与配音")
             if self.original_player:
                 self.original_audio.setMuted(True)
                 self.original_player.stop()

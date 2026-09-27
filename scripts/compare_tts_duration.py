@@ -29,6 +29,9 @@ import torch
 import numpy as np
 from voxlate.tts import TTSEngine, valid_wav
 cfg = load_config(args.config)
+cfg.update(source_lang=project.get('source_lang', 'en'), target_lang=project.get('target_lang', 'zh'))
+from voxlate.languages import speech_settings
+cfg['tts'] = speech_settings(cfg)
 media = Media(cfg)
 rows = [s for s in project['segments'] if s.get('enabled', True) and s.get('target_text')
         and 1 <= s['end']-s['start'] <= 5 and len(s['target_text']) <= 20 and valid_wav(s.get('source_audio', ''))

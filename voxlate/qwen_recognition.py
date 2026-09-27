@@ -91,7 +91,8 @@ def transcribe(audio, config, work_dir):
     def progress(message):
         print(message, flush=True)
         write_json(Path(work_dir)/'asr_progress.json',dict(stage='processing', detail=message))
-    language = {'en':'English', 'ja':'Japanese'}[config.get('language', 'en')]
+    from .languages import LANGUAGES
+    language = LANGUAGES[config.get('language', 'en')]['asr']
     device = 'cuda:0' if config['device'] == 'cuda' else 'cpu'
     dtype = torch.bfloat16 if device.startswith('cuda') and torch.cuda.is_bf16_supported() else (
         torch.float16 if device.startswith('cuda') else torch.float32)

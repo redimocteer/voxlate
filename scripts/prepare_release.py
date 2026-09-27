@@ -86,6 +86,13 @@ def main():
     tag = metadata['release_tag']
     if not re.fullmatch(r'v\d+\.\d+\.\d+(?:-[a-z0-9.]+)?', tag):
         raise ValueError('Invalid version')
+    version = re.search(r'__version__\s*=\s*"([^"]+)"',
+                        (ROOT/'voxlate/__init__.py').read_text(encoding='utf-8')).group(1)
+    if tag != 'v' + version or version.endswith('-dev'):
+        raise ValueError('Release metadata and application version must match a new release; do not reuse a milestone tag')
+    output = ROOT / 'dist/releases' / tag
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError(f'Release artifacts already exist: {output}; use a new version')
     if importlib.metadata.version('PySide6-Essentials') != QT:
         raise ValueError('Update source manifest before building a different Qt version')
     build = ROOT / 'dist/beta/voxlate'
@@ -106,7 +113,6 @@ def main():
         jobs = [pool.submit(download, url, cache / name) for name, url in SOURCES.items()]
         for job in jobs:
             job.result()
-    output = ROOT / 'dist/releases' / tag
     output.mkdir(parents=True, exist_ok=True)
     # Refuse reuse to avoid carrying stale binaries or user-added files.
     stage = output / f'Voxlate-{tag}-windows-x64'

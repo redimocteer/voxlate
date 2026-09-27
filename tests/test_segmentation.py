@@ -23,6 +23,15 @@ def fixture():
 
 
 class PlanTests(unittest.TestCase):
+    def test_new_manual_rows_keep_project_target_language(self):
+        project = fixture()
+        project.update(source_lang='zh', target_lang='ja')
+        plan = SegmentPlan(project, 0, 0)
+        plan.split(2)
+        current, _ = replace_segments(project, plan.blocks, ['测试一', '测试二'], ['テスト一', 'テスト二'])
+        for row in current['segments'][:2]:
+            self.assertEqual((row['source_lang'], row['target_lang']), ('zh', 'ja'))
+
     def test_gaps_remain_in_timeline_and_history_restores_cuts(self):
         project = fixture()
         plan = SegmentPlan(project, 0, 1)

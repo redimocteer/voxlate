@@ -15,16 +15,19 @@ from voxlate.pipeline import VideoDubPipeline
 parser=argparse.ArgumentParser()
 parser.add_argument('video',type=Path)
 parser.add_argument('--config',type=Path,required=True)
-parser.add_argument('--language',choices=['en','ja'],default='en')
+parser.add_argument('--language',choices=['zh','en','ja'],default='en')
+parser.add_argument('--target-lang',choices=['zh','en','ja'],default='zh')
 args=parser.parse_args()
 cfg=load_config(args.config)
 select_model(cfg,'asr_qwen_model',resource_root(cfg))
 cfg['source_lang']=args.language
+cfg['target_lang']=args.target_lang
 directory=default_project_directory(args.video,cfg)
 directory.mkdir(parents=True,exist_ok=True)
 os.environ.update(worker_environment(directory,dict(os.environ)))
 logging.basicConfig(level=logging.INFO,format='%(message)s')
 start=time.perf_counter()
-VideoDubPipeline(cfg).process(args.video,args.video.with_suffix('.qwen-test.zh.mp4'),directory,stop_after='translate')
+from voxlate.languages import default_output
+VideoDubPipeline(cfg).process(args.video,default_output(args.video,cfg),directory,stop_after='translate')
 write_json(directory/'experiment_metrics.json',{'seconds':time.perf_counter()-start})
 print('PROJECT '+str(directory/'project.json'),flush=True)

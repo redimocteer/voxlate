@@ -172,7 +172,7 @@ def replace_segments(project, blocks, texts, translations):
             raise VoxlateError('有时间块未识别或翻译成功，未修改项目。')
         row = dict(start=block['start'], end=block['end'], enabled=block['enabled'],
             source_text=text.strip() or '（保留原声）', target_text=translated.strip(), speaker='A',
-            source_lang=project.get('source_lang', 'en'), target_lang='zh', manual_boundary=True,
+            source_lang=project.get('source_lang', 'en'), target_lang=project.get('target_lang', 'zh'), manual_boundary=True,
             voice_identity='manual-'+uuid.uuid4().hex)
         neighbors = [s for s in touched if s['end'] > row['start'] and s['start'] < row['end']]
         exact = next((s for s in neighbors if abs(s['start']-row['start']) < 1e-6 and abs(s['end']-row['end']) < 1e-6), None)
@@ -233,6 +233,9 @@ def recognize_segment(project_path, expected_hash, cfg, start, end, *, use_origi
         if digest(project) != expected_hash:
             raise VoxlateError('项目已变化，请重新打开分句编辑器。')
         validate_project_directory(project['input'], path.parent)
+        from .languages import direction
+        if direction(project) != direction(cfg):
+            raise VoxlateError('语言方向与项目不同，请重新打开对应项目。')
         if not 0 <= start < end <= project['duration'] or end-start > MAX_SPAN:
             raise VoxlateError('识别范围无效。')
         work = path.parent/'.temp'/'manual-preview'/uuid.uuid4().hex
@@ -266,6 +269,9 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
         if digest(project) != expected_hash:
             raise VoxlateError('项目已变化，请重新打开分句编辑器。')
         validate_project_directory(project['input'], path.parent)
+        from .languages import direction
+        if direction(project) != direction(cfg):
+            raise VoxlateError('语言方向与项目不同，请重新打开对应项目。')
         validate_blocks(blocks, project['duration'])
         for folder in (path.parent/'.temp', path.parent/'history'):
             if not folder.resolve().is_relative_to(path.parent.resolve()):

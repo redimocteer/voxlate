@@ -63,6 +63,8 @@ def tempo_filter(ratio):
 
 class Media:
     def __init__(self, cfg):
+        from .languages import LANGUAGES, direction
+        self.source_language, self.target_language = (LANGUAGES[code] for code in direction(cfg))
         self.ffmpeg = cfg["ffmpeg"]
         self.ffprobe = cfg["ffprobe"]
         self.sample_rate = cfg["audio"]["sample_rate"]
@@ -125,11 +127,11 @@ class Media:
             inputs += ["-i", original_audio]
         inputs += ["-map", "0:V:0", "-map", "1:a:0"]
         if original_audio:
-            inputs += ["-map", "2:a:0", "-metadata:s:a:0", "title=中文配音",
+            inputs += ["-map", "2:a:0", "-metadata:s:a:0", "title=" + self.target_language['name'] + "配音",
                        "-metadata:s:a:0", "handler_name=Voxlate Dub",
-                       "-metadata:s:a:0", "language=zho", "-disposition:a:0", "default",
+                       "-metadata:s:a:0", "language=" + self.target_language['iso3'], "-disposition:a:0", "default",
                        "-metadata:s:a:1", "title=原声", "-metadata:s:a:1", "handler_name=Voxlate Original",
-                       "-disposition:a:1", "0"]
+                       "-metadata:s:a:1", "language=" + self.source_language['iso3'], "-disposition:a:1", "0"]
         audio_options = ["-c:a", "aac", "-b:a", "192k", "-t", str(duration), "-movflags", "+faststart"]
         try:
             self.render([*inputs, "-c:v", "copy", *audio_options], output)

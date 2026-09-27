@@ -257,7 +257,8 @@ class MainWindow(QMainWindow):
     model_event = Signal(str)
     def __init__(self, data_dir=None, auto_check=True):
         super().__init__()
-        self.setWindowTitle("Voxlate")
+        from . import __version__
+        self.setWindowTitle('Voxlate · ' + __version__ if __version__.endswith('-dev') else 'Voxlate')
         self.resize(1180, 820)
         self.setMinimumSize(900, 650)
         self.data_dir = Path(data_dir or default_data_dir()).resolve()
@@ -391,9 +392,11 @@ class MainWindow(QMainWindow):
         self.busy_widgets.append(self.audio_track_box)
         row.addWidget(self.audio_track_box)
         self.source_language = QComboBox()
-        self.source_language.addItem('英文 → 中文', 'en')
-        self.source_language.addItem('日文 → 中文', 'ja')
-        self.source_language.setCurrentIndex(self.source_language.findData(self.cfg.get('source_lang', 'en')))
+        from .languages import DIRECTIONS, direction_id, direction_label
+        for source, target in DIRECTIONS:
+            self.source_language.addItem(direction_label(source, target), f'{source}-{target}')
+        self.source_language.setCurrentIndex(self.source_language.findData(direction_id(self.cfg)))
+        self.source_language.setToolTip('选择原声与配音语言；各方向的项目和配音分别保存。')
         self.source_language.currentIndexChanged.connect(self.change_source_language)
         self.busy_widgets.append(self.source_language)
         row.addWidget(self.source_language)
@@ -442,7 +445,8 @@ class MainWindow(QMainWindow):
         self.video.setPlaceholderText("将英文或日文视频拖到窗口，或点击「选择…」")
         self.table = SentenceTable(0, 6)
         self.table.set_range_button(self.manual_segmentation_button)
-        self.table.setHorizontalHeaderLabels(["时间", "原文", "中文译文", "", "", "角色"])
+        from .languages import LANGUAGES
+        self.table.setHorizontalHeaderLabels(["时间", "原文", LANGUAGES[self.cfg.get('target_lang', 'zh')]['name'] + "译文", "", "", "角色"])
         self.table.timeRangeSelected.connect(self.select_segmentation_range)
         self.table.itemSelectionChanged.connect(self.refresh_segmentation_selection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -1145,7 +1149,7 @@ class MainWindow(QMainWindow):
             if key in ASR_MODELS:
                 detail = "支持英文、日文。"
             elif key in MODELS:
-                detail = "英文、日文直接译成中文。"
+                detail = "中文、英文、日文之间互译。"
             if not resource.ready and resource.required:
                 detail += "\n未就绪，可安装后重新检查。"
             title = CATALOG[key].title if key in CATALOG else resource.title
@@ -1408,7 +1412,8 @@ class MainWindow(QMainWindow):
     def translation_ready(self, sentence_ids=None):
         if not self.project or not self.project.get("segments"):
             return False
-        settings = dict(self.cfg["translator"], source_lang=self.cfg.get("source_lang", "en"))
+        from .languages import translation_settings
+        settings = translation_settings(self.cfg)
         if self.project.get("translation_config_key") not in (None, digest(settings)):
             return False
         segments = self.project["segments"]
@@ -1594,21 +1599,24 @@ class MainWindow(QMainWindow):
         self.start_pipeline('dub', sentence_ids=[self.project['segments'][row]['id']], force_tts=True)
 
     def change_source_language(self):
-        old = self.cfg.get("source_lang", "en")
-        language = self.source_language.currentData()
-        if language == old:
+        from .languages import direction, direction_id, LANGUAGES
+        old_source, old_target = direction(self.cfg)
+        old = direction_id(self.cfg)
+        selected = self.source_language.currentData()
+        if selected == old:
             return
         if not self.confirm_discard():
             self.source_language.blockSignals(True)
             self.source_language.setCurrentIndex(self.source_language.findData(old))
             self.source_language.blockSignals(False)
             return
-        self.tts_session.close('切换源语言')
-        self.cfg["source_lang"] = language
+        self.stop_sentence_audio()
+        self.tts_session.close('切换语言方向')
+        self.cfg['source_lang'], self.cfg['target_lang'] = selected.split('-')
         try:
             self.save_settings()
         except (OSError, ValueError, VoxlateError) as exc:
-            self.cfg["source_lang"] = old
+            self.cfg['source_lang'], self.cfg['target_lang'] = old_source, old_target
             self.source_language.blockSignals(True)
             self.source_language.setCurrentIndex(self.source_language.findData(old))
             self.source_language.blockSignals(False)
@@ -1617,8 +1625,11 @@ class MainWindow(QMainWindow):
         self.project = self.project_hash = None
         self.dirty = False
         self.table.setRowCount(0)
+        self.table.horizontalHeaderItem(2).setText(LANGUAGES[self.cfg['target_lang']]['name'] + '译文')
         self.restore_voice_selection()
         self.project_path = self.default_project_path(Path(self.video.text())) if self.video.text().strip() else None
+        if self.video.text().strip():
+            self.update_output(Path(self.video.text()))
         self.refresh_export_state()
         if self.project_path and self.project_path.exists():
             self.load_project(self.project_path)
@@ -1712,8 +1723,8 @@ class MainWindow(QMainWindow):
         return True
 
     def update_output(self, video):
-        suffix = track_suffix(self.cfg)
-        self.output_path = Path(video).with_name(Path(video).stem + suffix + ".zh.mp4")
+        from .languages import default_output
+        self.output_path = default_output(video, self.cfg)
         self.play_output_button.setToolTip(str(self.output_path))
 
     def dropped_video(self, mime):
@@ -1777,9 +1788,8 @@ class MainWindow(QMainWindow):
             original_hash = digest(project)
             if project.get("schema_version") != 1 or project.get("name") != "voxlate":
                 raise VoxlateError("这不是支持的 voxlate 项目")
-            language = project.get("source_lang", "en")
-            if language not in ("en", "ja") or project.get("target_lang", "zh") != "zh":
-                raise VoxlateError("仅支持英文或日文翻译成中文的项目")
+            from .languages import direction, direction_id, LANGUAGES
+            language, target = direction(project)
             from .pipeline import validate_segments
             validate_segments(project["segments"], project["duration"])
             if project.get('voice_mode') == 'roles':
@@ -1815,11 +1825,13 @@ class MainWindow(QMainWindow):
                 if self.resources:
                     self.resources_checked(self.resources)
             self.cfg["source_lang"] = language
+            self.cfg['target_lang'] = target
             self.refresh_audio_tracks(project['input'], selected_track(project), fallback=False,
                                       known_count=project.get('audio_track_count', 0))
             self.source_language.blockSignals(True)
-            self.source_language.setCurrentIndex(self.source_language.findData(language))
+            self.source_language.setCurrentIndex(self.source_language.findData(direction_id(project)))
             self.source_language.blockSignals(False)
+            self.table.horizontalHeaderItem(2).setText(LANGUAGES[target]['name'] + '译文')
             self.project = project
             self.project_path = Path(path)
             self.project_hash = original_hash

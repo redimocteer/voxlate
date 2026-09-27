@@ -4,7 +4,7 @@
 
 - 发行维护：Windows 目录包已加入许可、文件清单和对应依赖源码附件；升级依赖时重新核对。继续完善另行下载资源的许可保留和版本记录；发布模型整合包或商业服务前，核对 IndexTTS 条款和生成内容标识。见 `docs/RELEASE_REVIEW.md`。
 
-- 中、英、日六向互译：沿用现有识别、Hy-MT2 7B 和 IndexTTS 2.5，增加六个语言方向；接通目标语言、翻译提示及配音语言，按语言方向隔离译文、配音缓存和导出，兼容旧项目。保持本地处理，分别验证各方向的翻译、读音、跨语言音色和时长。
+- 中、英、日六向互转已接入开发分支，旧中文输出缓存保持兼容。继续用真实短片验证各方向的分句、翻译、日语读音、跨语言音色与时长；验证完成后另发 0.2 测试版，不覆盖 0.1 里程碑。
 - 中英文界面：界面语言与翻译方向分别设置；方向标签随界面语言显示，英文界面可用 ZH → EN、JA → ZH 等简写。选择日语输出不自动切成日文界面。英文界面完成后，再更新英文 README 和对应截图；当前先维护中文文档。
 - 手动分句已支持局部波形、拖选新增、逐句试听、撤销重做、草稿和备份；未改句子复用结果，仅删除不调用模型。继续优化选区与快捷键，评估可关闭的静音吸附、应用后的界面内恢复。
 - 配音慢句排查：固定译文、参考音频和随机种子，重复对比同一句；记录逐句耗时及显存峰值，再判断长参考、内存调度或模型内部步骤的影响。优化须同时验证音质，不将一次异常当作模型速度排名。
@@ -18,7 +18,7 @@
 
 ## English summary
 
-- Add all six translation directions among Chinese, English and Japanese using the existing ASR, Hy-MT2 7B and IndexTTS 2.5 models. Carry the target language through prompts and synthesis; separate translation, speech caches and exports by direction while preserving existing projects. Keep processing local and validate translation, pronunciation, cross-language voice and timing for each direction.
+- Six directions are connected on the development branch, with separate projects and exports and compatible Chinese-output caches. Validate real short clips for translation, pronunciation, cross-language voice and timing before a separate 0.2 release; retain the 0.1 milestone.
 - Manual segmentation supports bounded waveforms, drag-to-create ranges, preview, undo/redo, drafts and backups. Unchanged lines retain their results; deletion-only edits do not load models. Refine gestures/shortcuts and evaluate optional silence snapping and in-app restoration after applying.
 - Reproduce slow synthesis with fixed text, references and seeds; measure per-line runtime and peak VRAM before changing inference behavior.
 - Evaluate combined recognition against annotated speaker turns and timings before changing defaults or adding a third-model fusion.

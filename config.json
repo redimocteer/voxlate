@@ -3,6 +3,7 @@
   "ffprobe": "ffprobe",
   "try_mirrors": true,
   "source_lang": "en",
+  "target_lang": "zh",
   "runtime": {"python": ".venv/Scripts/python.exe"},
   "asr": {
     "combined": true,

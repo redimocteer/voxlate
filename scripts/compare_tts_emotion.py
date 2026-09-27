@@ -26,6 +26,7 @@ def main():
     work = path.parent/'.temp'/('emotion-comparison-'+time.strftime('%Y%m%d-%H%M%S'))
     work.mkdir(parents=True)
     cfg = load_config(args.config)
+    cfg.update(source_lang=project.get('source_lang', 'en'), target_lang=project.get('target_lang', 'zh'))
     reference = project.get('speaker_reference') or str(path.parent/'speaker_A.wav')
     rows = [s for s in project['segments'] if s['id'] in args.ids]
     assert len(rows) == len(args.ids) and Path(reference).is_file()

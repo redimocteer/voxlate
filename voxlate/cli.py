@@ -22,11 +22,12 @@ def doctor(cfg, config_path):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="voxlate", description="纯本地英文或日文→中文视频配音，保留音色与背景声")
+    parser = argparse.ArgumentParser(prog="voxlate", description="纯本地中英日互转视频配音，保留音色与背景声")
     parser.add_argument("input", nargs="?", type=Path)
     parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[1] / "config.json")
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--source-lang", choices=["en", "ja"], help="视频源语言，默认使用配置")
+    parser.add_argument("--source-lang", choices=["zh", "en", "ja"], help="视频源语言，默认使用配置")
+    parser.add_argument("--target-lang", choices=["zh", "en", "ja"], help="配音目标语言，默认使用配置")
     parser.add_argument('--audio-track', type=int, help='原声音轨编号，从 1 开始；默认第 1 条')
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--speaker-ref", type=Path, help="5–15 秒干净的人物参考音频；省略则从分离人声选取")
@@ -44,6 +45,10 @@ def main(argv=None):
         cfg = load_config(args.config)
         if args.source_lang:
             cfg["source_lang"] = args.source_lang
+        if args.target_lang:
+            cfg['target_lang'] = args.target_lang
+        from .languages import direction, default_output
+        direction(cfg)
         if args.audio_track is not None:
             if args.audio_track < 1:
                 raise VoxlateError('音轨编号须从 1 开始')
@@ -61,8 +66,7 @@ def main(argv=None):
         work = args.work_dir or existing_project_directory(args.input, cfg)
         if not cfg['audio_track_count'] and (work/'project.json').is_file():
             cfg['audio_track_count'] = read_json(work/'project.json').get('audio_track_count', 0)
-        suffix = track_suffix(cfg)
-        output = args.output or args.input.resolve().with_name(f"{args.input.stem}{suffix}.zh.mp4")
+        output = args.output or default_output(args.input.resolve(), cfg)
         validate_project_directory(args.input, work)
         if output.exists() and not args.overwrite and not args.stop_after and not args.translate_only:
             raise VoxlateError("输出已存在，请换一个 --output 或使用 --overwrite")

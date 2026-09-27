@@ -606,8 +606,21 @@ class PipelineIntegration(unittest.TestCase):
         self.assertEqual(project["source_lang"], "ja")
         self.assertTrue(all(s["source_lang"] == "ja" for s in project["segments"]))
         self.cfg["source_lang"] = "en"
-        with self.assertRaisesRegex(VoxlateError, "源语言与项目不同"):
+        with self.assertRaisesRegex(VoxlateError, "语言方向与项目不同"):
             VideoDubPipeline(self.cfg, runner=self.runner).process(self.video, self.output, self.work, stop_after="translate")
+
+    def test_non_chinese_target_persists_in_rows_and_rejects_wrong_target(self):
+        self.cfg.update(source_lang='zh', target_lang='ja')
+        pipeline = VideoDubPipeline(self.cfg, runner=self.runner)
+        pipeline.process(self.video, self.output, self.work, stop_after='translate')
+        project = read_json(self.work/'project.json')
+        self.assertEqual((project['source_lang'], project['target_lang']), ('zh', 'ja'))
+        self.assertTrue(all(s['target_lang'] == 'ja' for s in project['segments']))
+        snapshot = (self.work/'project.json').read_bytes()
+        with self.assertRaisesRegex(VoxlateError, '语言方向'):
+            VideoDubPipeline(dict(self.cfg, target_lang='en'), runner=self.runner).process(
+                self.video, self.output, self.work, stop_after='translate')
+        self.assertEqual((self.work/'project.json').read_bytes(), snapshot)
 
     def setUp(self):
         self.temp = TestDirectory()

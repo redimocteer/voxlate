@@ -70,7 +70,7 @@ def qwen_blocks(blocks, cfg, directory, progress):
                     samples = source.read(source.samplerate*30, dtype='float32', always_2d=True).mean(axis=1)
                     if source.samplerate != 16000:
                         samples = librosa.resample(samples, orig_sr=source.samplerate, target_sr=16000)
-                    text = model.transcribe(audio=(samples, 16000), language={'en': 'English', 'ja': 'Japanese'}[
+                    text = model.transcribe(audio=(samples, 16000), language={'en': 'English', 'ja': 'Japanese', 'zh': 'Chinese'}[
                         cfg.get('language', 'en')])[0].text.strip()
                     if text:
                         parts.append(text)

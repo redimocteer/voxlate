@@ -44,6 +44,7 @@ def main():
     write_json(copy_path,copy.deepcopy(project))
     cfg=load_config(args.config)
     cfg['source_lang']=project.get('source_lang','en')
+    cfg['target_lang']=project.get('target_lang','zh')
     logging.basicConfig(level=logging.INFO,format='%(message)s',handlers=[logging.FileHandler(destination/'check.log',encoding='utf-8')])
     started=time.perf_counter()
     text=recognize_segment(copy_path,digest(project),cfg,*plan.pairs[0])

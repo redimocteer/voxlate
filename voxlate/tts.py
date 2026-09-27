@@ -3,6 +3,7 @@ import sys
 import wave
 
 from .common import VoxlateError
+from .languages import LANGUAGES
 
 
 def release_idle_cuda_memory(torch, device):
@@ -40,6 +41,10 @@ def valid_wav(path):
 
 class TTSEngine:
     def __init__(self, config):
+        target = config.get('target_lang', 'zh')
+        if target not in LANGUAGES:
+            raise VoxlateError('不支持的配音语言')
+        self.language = LANGUAGES[target]['tts']
         sys.path.insert(0, config["repo_path"])
         import torch
         from indextts.infer_v2_5 import IndexTTS2
@@ -67,7 +72,7 @@ class TTSEngine:
         temporary = output.with_suffix(".partial.wav")
         self.model.infer(text=text, spk_audio_prompt=str(speaker_reference),
                          emo_audio_prompt=str(emotion_reference) if emotion_reference else None,
-                         output_path=str(temporary), lang="ZH", verbose=False,
+                         output_path=str(temporary), lang=self.language, verbose=False,
                          use_random=False, interval_silence=100, duration_factor=duration_factor)
         if not valid_wav(temporary):
             raise VoxlateError("TTS 未生成有效音频")

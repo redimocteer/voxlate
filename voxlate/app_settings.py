@@ -4,10 +4,12 @@ import shutil
 
 from .common import load_config, read_json, write_json
 from .runtime import bundle_root, set_external_code_root
+from . import __version__
 
 
 def default_data_dir():
-    return Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local/share")) / "voxlate"
+    name = 'voxlate-dev' if __version__.endswith('-dev') else 'voxlate'
+    return Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local/share")) / name
 
 
 def player_volume(data_dir):
@@ -51,5 +53,15 @@ def prepare_settings(data_dir):
             if key in defaults[section]:
                 defaults[section][key] = str(resources / defaults[section][key])
     if not config_path.exists():
-        write_json(config_path, defaults)
+        initial = defaults
+        # Development builds keep their settings/support code separate while
+        # reusing the user's already-installed resources, without copying models.
+        if __version__.endswith('-dev') and data_dir == default_data_dir().resolve():
+            stable = data_dir.with_name('voxlate')/'config.json'
+            if stable.is_file():
+                try:
+                    initial = load_config(stable)
+                except (OSError, ValueError, RuntimeError, KeyError, TypeError):
+                    pass
+        write_json(config_path, initial)
     return config_path, defaults
