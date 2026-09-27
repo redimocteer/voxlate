@@ -1,0 +1,2 @@
+# Download ready-to-use models; no conversion or PyTorch required.
+huggingface-hub>=0.28,<1

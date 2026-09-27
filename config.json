@@ -1,0 +1,45 @@
+{
+  "ffmpeg": "ffmpeg",
+  "ffprobe": "ffprobe",
+  "try_mirrors": true,
+  "source_lang": "en",
+  "runtime": {"python": ".venv/Scripts/python.exe"},
+  "asr": {
+    "combined": true,
+    "model_path": "models/faster-whisper-large-v3-turbo",
+    "device": "cpu",
+    "compute_type": "int8",
+    "beam_size": 5,
+    "cpu_threads": 4
+  },
+  "translator": {
+    "model_path": "models/hy-mt2-7b-q4",
+    "model_type": "hy_mt2_7b",
+    "engine_path": "tools/llama/llama-completion.exe",
+    "device": "cuda",
+    "compute_type": "int8",
+    "beam_size": 1,
+    "cpu_threads": 4
+  },
+  "separator": {
+    "python": ".venv-separator/Scripts/python.exe",
+    "model_path": "models/demucs",
+    "model": "htdemucs",
+    "device": "cuda",
+    "shifts": 0,
+    "overlap": 0.1
+  },
+  "tts": {
+    "python": "third_party/index-tts/.venv/Scripts/python.exe",
+    "repo_path": "third_party/index-tts",
+    "model_path": "models/IndexTTS-2.5",
+    "device": "cuda:0",
+    "use_bf16": true,
+    "emotion_reference": true
+  },
+  "audio": {
+    "sample_rate": 24000,
+    "background_gain": 1.0,
+    "dubbing_gain": 1.0
+  }
+}

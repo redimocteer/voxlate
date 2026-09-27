@@ -1,0 +1,5 @@
+# Main runtime: no PyTorch; GPU-heavy stages use isolated environments.
+faster-whisper>=1.1,<2
+ctranslate2>=4.5,<5
+sentencepiece>=0.2,<0.3
+sacremoses>=0.1,<0.2

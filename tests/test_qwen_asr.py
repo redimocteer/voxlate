@@ -1,0 +1,67 @@
+from types import SimpleNamespace as Word
+from pathlib import Path
+import unittest
+from test_pipeline import TestDirectory
+from voxlate.app_settings import prepare_settings
+from voxlate.common import load_config, VoxlateError
+from voxlate.qwen_recognition import aligned_segments
+from voxlate.recognition_models import select_model, required_model
+from voxlate.installer import resource_root, planned_stages
+from voxlate.diagnostics import check_resources
+from voxlate.project_storage import default_project_directory
+from voxlate.runtime import worker_command
+
+
+class QwenTests(unittest.TestCase):
+    def test_preserves_english_spelling_punctuation_and_offsets(self):
+        words = [Word(text=t, start_time=i*.5, end_time=i*.5+.4)
+                 for i,t in enumerate(['Hello', "I'm", 'Anna', 'Come', 'here'])]
+        rows = aligned_segments('Hello! I’m Anna. Come here?', words, 60, 3, 'en')
+        self.assertEqual([r['source_text'] for r in rows], ['Hello!', 'I’m Anna.', 'Come here?'])
+        self.assertEqual(rows[0]['start'],60)
+        self.assertAlmostEqual(rows[-1]['end'],62.4)
+        self.assertTrue(all(a['end'] <= b['start'] for a,b in zip(rows, rows[1:])))
+
+    def test_japanese_is_not_dropped_or_space_inserted(self):
+        words = [Word(text=t,start_time=i*.3,end_time=i*.3+.25)
+                 for i,t in enumerate(['これ','は','何','です','か','そう','です'])]
+        rows=aligned_segments('これは何ですか？そうです。',words,0,3,'ja')
+        self.assertEqual([r['source_text'] for r in rows], ['これは何ですか？','そうです。'])
+
+    def test_refuses_incomplete_text_and_invalid_timestamps(self):
+        for token,start,end in [('there',0,.3),('hello',0,float('nan')),('hello',-1,.3),('hello',0,5)]:
+            with self.subTest(token=token,start=start,end=end),self.assertRaises(VoxlateError):
+                aligned_segments('hello',[Word(text=token,start_time=start,end_time=end)],0,1,'en')
+        with self.assertRaises(VoxlateError):
+            aligned_segments('hello again',[Word(text='hello',start_time=0,end_time=.3)],0,1,'en')
+
+    def test_zero_duration_interjection_is_retained_for_review(self):
+        words=[Word(text='And',start_time=.5,end_time=.5),Word(text='now',start_time=2,end_time=2.4)]
+        rows=aligned_segments('And... now!',words,0,3,'en')
+        self.assertEqual(rows[0]['source_text'],'And... now!')
+        self.assertTrue(rows[0]['timing_uncertain'])
+
+    def test_abbreviation_period_does_not_end_a_sentence(self):
+        words=[Word(text='Mr',start_time=0,end_time=.4),Word(text='Smith',start_time=.4,end_time=.8)]
+        rows=aligned_segments('Mr. Smith.',words,0,1,'en')
+        self.assertEqual([r['source_text'] for r in rows],['Mr. Smith.'])
+
+    def test_qwen_uses_own_environment_and_project_but_not_whisper_combination(self):
+        with TestDirectory() as folder:
+            config,_=prepare_settings(folder)
+            cfg=load_config(config)
+            root=resource_root(cfg)
+            select_model(cfg,'asr_qwen_model',root)
+            self.assertFalse(cfg['asr']['combined'])
+            self.assertIn('.venv-qwen',worker_command(cfg,'asr',Path(folder)/'job.json')[0])
+            self.assertTrue(default_project_directory(Path(folder)/'sample.mp4',cfg).name.endswith('qwen3-asr-1.7b'))
+            stages=planned_stages(check_resources(cfg,config,quick=True))
+            self.assertIn('qwen',stages)
+            self.assertIn('asr_qwen_model',stages)
+            self.assertNotIn('asr_large_model',stages)
+            cfg['asr']['combined']=True
+            self.assertEqual(worker_command(cfg,'asr',Path(folder)/'job.json')[0],cfg['runtime']['python'])
+            self.assertFalse(required_model(cfg,'asr_qwen_model'))
+            self.assertTrue(required_model(cfg,'asr_large_model'))
+            select_model(cfg,'asr_turbo_model',root)
+            self.assertNotIn('python',cfg['asr'])
