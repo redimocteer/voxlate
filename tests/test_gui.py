@@ -729,6 +729,36 @@ class GuiTests(unittest.TestCase):
         self.window.toggle_sentence(0, 1)
         self.assertEqual(table.item(0, 2).foreground().color().name(), "#23324a")
 
+    def test_copy_selection_does_not_discard_source_sentence(self):
+        from PySide6.QtTest import QTest
+        path = Path(self.directory.name) / 'source.mp4.voxlate/project.json'
+        project = dict(schema_version=1, name='voxlate', input=str(Path(self.directory.name) / 'source.mp4'),
+            duration=3, segments=[dict(id=1, start=0, end=1, source_text='Hello', target_text='你好'),
+                                  dict(id=2, start=1, end=2, source_text='Goodbye', target_text='再见')])
+        write_json(path, project)
+        self.window.load_project(path)
+        self.window.show()
+        self.app.processEvents()
+        table = self.window.table
+        before = path.read_bytes()
+        for modifier in (Qt.KeyboardModifier.ControlModifier, Qt.KeyboardModifier.ShiftModifier):
+            table.clearSelection()
+            point = table.visualItemRect(table.item(0, 1)).center()
+            QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, modifier, point)
+            QTest.keyClick(table, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+            self.assertEqual(self.app.clipboard().text(), 'Hello')
+            self.assertTrue(table.item(0, 0).data(Qt.ItemDataRole.UserRole))
+            self.assertEqual(path.read_bytes(), before)
+        table.clearSelection()
+        start = table.visualItemRect(table.item(0, 1)).center()
+        end = table.visualItemRect(table.item(1, 2)).center()
+        QTest.mousePress(table.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(table.viewport(), end)
+        QTest.mouseRelease(table.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        QTest.keyClick(table, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+        self.assertEqual(self.app.clipboard().text(), 'Hello\t你好\nGoodbye\t再见')
+        self.assertEqual(path.read_bytes(), before)
+
     def test_sentence_numbers_and_timing_survive_reload_but_not_text_edits(self):
         from voxlate.translation_view import TIMING_ROLE, gradient_fraction
         path = Path(self.directory.name) / "project.mp4.voxlate" / "project.json"

@@ -1,13 +1,13 @@
 """Time-column range gestures and compact, discoverable header help."""
 from PySide6.QtCore import Qt, Signal, QTimer, QRectF, QEvent, QSize
-from PySide6.QtGui import QColor, QPen
-from PySide6.QtWidgets import QTableWidget, QTableWidgetSelectionRange, QHeaderView, QToolTip, QStyleOptionHeader, QStyle
+from PySide6.QtGui import QColor, QPen, QKeySequence
+from PySide6.QtWidgets import QApplication, QTableWidget, QTableWidgetSelectionRange, QHeaderView, QToolTip, QStyleOptionHeader, QStyle
 
 
 HEADER_HELP = {
     0: '单击时间或拖选连续几句，再点“手动分句…”。',
-    1: '点击原文选取／舍弃此句。变淡表示保留原声。',
-    2: '双击修改译文并自动保存。',
+    1: '点击原文选取／舍弃此句。Ctrl+单击仅选中文字格，Ctrl+C复制；可拖选多句。',
+    2: '双击修改译文并自动保存。选中文字格后Ctrl+C复制；可拖选多句。',
 }
 
 
@@ -81,6 +81,8 @@ class SentenceTable(QTableWidget):
         self.setHorizontalHeader(InfoHeader(self))
         self.time_anchor = None
         self.time_last = None
+        self.selecting_text = False
+        self.text_press_pos = None
         self.range_button = None
         self.button_range = None
         self.verticalScrollBar().valueChanged.connect(self.position_range_button)
@@ -130,8 +132,28 @@ class SentenceTable(QTableWidget):
         super().resizeEvent(event)
         self.position_range_button()
 
+    def keyPressEvent(self, event):
+        if event.matches(QKeySequence.StandardKey.Copy):
+            cells = {(index.row(), index.column()): str(index.data() or '')
+                     for index in self.selectedIndexes()
+                     if index.column() in (1, 2) and not self.isColumnHidden(index.column())}
+            if cells:
+                rows = sorted({row for row, column in cells})
+                columns = sorted({column for row, column in cells})
+                text = '\n'.join('\t'.join(cells.get((row, column), '') for column in columns)
+                                 for row in rows)
+                QApplication.clipboard().setText(text)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def mousePressEvent(self, event):
         index = self.indexAt(event.position().toPoint())
+        self.selecting_text = False
+        self.text_press_pos = None
+        if event.button() == Qt.MouseButton.LeftButton and index.isValid() and index.column() in (1, 2):
+            self.text_press_pos = event.position().toPoint()
+            self.selecting_text = bool(event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier))
         if event.button() == Qt.MouseButton.LeftButton and index.isValid() and index.column() == 0:
             if self.range_button:
                 self.range_button.hide()
@@ -147,6 +169,9 @@ class SentenceTable(QTableWidget):
         self.setRangeSelected(QTableWidgetSelectionRange(min(self.time_anchor, row), 0, max(self.time_anchor, row), 0), True)
 
     def mouseMoveEvent(self, event):
+        if self.text_press_pos is not None:
+            if (event.position().toPoint() - self.text_press_pos).manhattanLength() >= QApplication.startDragDistance():
+                self.selecting_text = True
         if self.time_anchor is not None:
             point = event.position().toPoint()
             if point.y() < 8:
@@ -167,4 +192,8 @@ class SentenceTable(QTableWidget):
             QTimer.singleShot(0, lambda: self.timeRangeSelected.emit(first, last))
             event.accept()
             return
-        super().mouseReleaseEvent(event)
+        try:
+            super().mouseReleaseEvent(event)
+        finally:
+            self.text_press_pos = None
+            self.selecting_text = False
