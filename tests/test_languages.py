@@ -35,15 +35,17 @@ class LanguageTests(unittest.TestCase):
     def test_recognition_passes_selected_language_and_rejects_english_only_model(self):
         cfg = load_config(Path(__file__).resolve().parents[1] / "config.json")["asr"]
         cfg['combined'] = False
-        model = Mock(is_multilingual=True)
+        model = Mock(spec=['model', 'transcribe'], model=Mock(is_multilingual=True))
         model.transcribe.return_value = ([SimpleNamespace(start=0, end=1, text="こんにちは")], None)
         with patch.dict(sys.modules, {"faster_whisper": Mock(WhisperModel=Mock(return_value=model))}):
             segments = transcribe("test.wav", dict(cfg, language="ja"))
             self.assertEqual(model.transcribe.call_args.kwargs["language"], "ja")
             self.assertEqual(segments[0]["source_lang"], "ja")
-            model.is_multilingual = False
+            model.model.is_multilingual = False
             with self.assertRaisesRegex(VoxlateError, "多语言"):
                 transcribe("test.wav", dict(cfg, language="ja"))
+            transcribe("test.wav", dict(cfg, language="en"))
+            self.assertEqual(model.transcribe.call_args.kwargs["language"], "en")
 
     def test_preconverted_download_is_pinned_and_verified_without_torch(self):
         from scripts.prepare_models import prepare_translator
