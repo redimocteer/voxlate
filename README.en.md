@@ -37,7 +37,7 @@ For multiple audio tracks, use the dropdown after **清空项目** (Clear projec
 | Voice cloning | IndexTTS 2.5 | Generates Chinese speech from voice and per-line emotion references |
 | Character grouping | CAMPPlus | Reuses voice-cloning weights for CPU speaker grouping |
 
-Combined recognition requires both Whisper models and disables individual selectors. Turn it off to choose a single model. Recognition modes and source languages use separate projects; switching back restores prior results. Hy-MT2 7B is the only translation option; translating again replaces the current translations.
+Choose one of four recognition modes: v3, turbo, combined recognition, or Qwen. Combined recognition is selected by default and requires both Whisper models. Recognition modes and source languages use separate projects; switching back restores prior results. Hy-MT2 7B is the only translation option; translating again replaces the current translations.
 
 Approximate model sizes: v3 **3.09 GB**, turbo **1.62 GB**, Qwen with alignment **6.54 GB**, Hy-MT2 7B **4.62 GB**, IndexTTS **7.1 GB**. Allow additional space for environments, downloads and project audio. Resources show measured file sizes after setup, not exact disk allocation.
 
