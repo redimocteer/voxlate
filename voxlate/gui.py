@@ -1868,6 +1868,8 @@ class MainWindow(QMainWindow):
     def toggle_sentence(self, row, column):
         if self.task is not None or column != 1 or not self.project:
             return
+        if self.table.selecting_text:
+            return
         item = self.table.item(row, 0)
         item.setData(Qt.ItemDataRole.UserRole, not item.data(Qt.ItemDataRole.UserRole))
         self.update_sentence_style(row)
