@@ -970,7 +970,7 @@ class MainWindow(QMainWindow):
                 if key in ASR_MODELS or (key in MODELS and len(MODELS) > 1):
                     recognition = key in ASR_MODELS
                     choice = QRadioButton(info.title)
-                    choice.setChecked(key == (selected_asr_key(self.cfg) if recognition else selected_key(self.cfg)))
+                    choice.setChecked(key == (self.recognition_choice() if recognition else selected_key(self.cfg)))
                     choice.setToolTip("选择当前使用的识别模型。切换后使用独立项目，原译文和配音保留。" if recognition else "选择当前使用的翻译模型；未下载时请点击本行「下载」。")
                     (self.asr_model_group if recognition else self.model_group).addButton(choice)
                     (self.asr_model_buttons if recognition else self.model_buttons)[key] = choice
@@ -1001,7 +1001,9 @@ class MainWindow(QMainWindow):
                 container = QWidget()
                 row = QHBoxLayout(container)
                 row.setContentsMargins(0, 0, 0, 0)
-                self.combined_asr = QCheckBox('综合识别（turbo + v3）')
+                self.combined_asr = QRadioButton('综合识别（turbo + v3）')
+                self.asr_model_group.addButton(self.combined_asr)
+                self.asr_model_buttons['asr_combined'] = self.combined_asr
                 self.combined_asr.setChecked(self.cfg['asr'].get('combined', False))
                 self.combined_asr.setToolTip('同时使用 v3 和 turbo，复查疑似漏句；仅合并两者一致的可靠补句。')
                 row.addWidget(self.combined_asr)
@@ -1010,7 +1012,7 @@ class MainWindow(QMainWindow):
                 row.addWidget(hint)
                 row.addStretch()
                 self.resource_tree.setItemWidget(combined_node, 0, container)
-                self.combined_asr.toggled.connect(self.change_combined_recognition)
+                self.combined_asr.clicked.connect(lambda: self.change_recognition_model('asr_combined'))
             group.setExpanded(True)
         self.set_resource_controls_enabled(self.task is None)
         self.resource_tree.blockSignals(False)
@@ -1033,9 +1035,7 @@ class MainWindow(QMainWindow):
         for button in getattr(self, "model_buttons", {}).values():
             button.setEnabled(enabled)
         for button in getattr(self, "asr_model_buttons", {}).values():
-            button.setEnabled(enabled and not self.cfg['asr'].get('combined', False))
-        if getattr(self, 'combined_asr', None) is not None:
-            self.combined_asr.setEnabled(enabled)
+            button.setEnabled(enabled)
 
     def restore_resources(self):
         cached = load_resource_cache(self.cfg, self.config_path)
@@ -1048,19 +1048,33 @@ class MainWindow(QMainWindow):
     def resources_restored(self, results):
         self.resources_checked(results, source='quick')
 
+    def recognition_choice(self):
+        return 'asr_combined' if self.cfg['asr'].get('combined', False) else selected_asr_key(self.cfg)
+
+    def sync_recognition_choice(self):
+        button = getattr(self, 'asr_model_buttons', {}).get(self.recognition_choice())
+        if button is not None:
+            button.setChecked(True)
+
     def change_recognition_model(self, key):
-        if self.task or self.cfg['asr'].get('combined', False) or key == selected_asr_key(self.cfg):
+        if self.task or key == self.recognition_choice():
+            self.sync_recognition_choice()
             return
         old = copy.deepcopy(self.cfg)
         if not self.confirm_discard():
-            self.asr_model_buttons[selected_asr_key(old)].setChecked(True)
+            self.sync_recognition_choice()
             return
-        select_asr_model(self.cfg, key, resource_root(self.cfg))
+        if key == 'asr_combined':
+            if selected_asr_key(self.cfg) == 'asr_qwen_model':
+                select_asr_model(self.cfg, 'asr_turbo_model', resource_root(self.cfg))
+        else:
+            select_asr_model(self.cfg, key, resource_root(self.cfg))
+        self.cfg['asr']['combined'] = key == 'asr_combined'
         try:
             self.save_settings()
         except (OSError, ValueError, VoxlateError) as exc:
             self.cfg = old
-            self.asr_model_buttons[selected_asr_key(old)].setChecked(True)
+            self.sync_recognition_choice()
             QMessageBox.warning(self, "设置未保存", str(exc))
             return
         self.project = self.project_hash = None
@@ -1071,41 +1085,11 @@ class MainWindow(QMainWindow):
         if self.project_path and self.project_path.exists():
             self.load_project(self.project_path)
         self.refresh_export_state()
-        self.notify("已选择 " + ASR_MODELS[key]["title"] + "；原模型的项目已保留，请点击「识别」。")
+        self.sync_recognition_choice()
+        title = '综合识别（turbo + v3）' if key == 'asr_combined' else ASR_MODELS[key]['title']
+        self.notify("已选择 " + title + "；原模型的项目已保留，请点击「识别」。")
         changed_device = any(old["asr"].get(k) != self.cfg["asr"].get(k) for k in ("device", "compute_type"))
         self.inspect(keys=set(ASR_MODELS) | {'qwen'} | ({"runtime"} if changed_device else set()), size_keys=set())
-
-    def change_combined_recognition(self, checked):
-        if self.task or checked == self.cfg['asr'].get('combined', False):
-            return
-        if not self.confirm_discard():
-            self.combined_asr.blockSignals(True)
-            self.combined_asr.setChecked(not checked)
-            self.combined_asr.blockSignals(False)
-            return
-        old = copy.deepcopy(self.cfg)
-        if checked and selected_asr_key(self.cfg) == 'asr_qwen_model':
-            select_asr_model(self.cfg, 'asr_turbo_model', resource_root(self.cfg))
-        self.cfg['asr']['combined'] = checked
-        try:
-            self.save_settings()
-        except (OSError, ValueError, VoxlateError) as exc:
-            self.cfg = old
-            self.combined_asr.blockSignals(True)
-            self.combined_asr.setChecked(not checked)
-            self.combined_asr.blockSignals(False)
-            QMessageBox.warning(self, '设置未保存', str(exc))
-            return
-        self.project = self.project_hash = None
-        self.dirty = False
-        self.table.setRowCount(0)
-        self.restore_voice_selection()
-        self.project_path = self.default_project_path(self.video.text()) if self.video.text().strip() else None
-        if self.project_path and self.project_path.exists():
-            self.load_project(self.project_path)
-        self.set_resource_controls_enabled(True)
-        self.refresh_export_state()
-        self.inspect(keys=set(ASR_MODELS) | {'qwen'}, size_keys=set())
 
     def change_translation_model(self, key):
         if self.task or key == selected_key(self.cfg):
@@ -1794,10 +1778,6 @@ class MainWindow(QMainWindow):
             if combined != self.cfg['asr'].get('combined', False):
                 self.cfg['asr']['combined'] = combined
                 self.save_settings()
-                if getattr(self, 'combined_asr', None) is not None:
-                    self.combined_asr.blockSignals(True)
-                    self.combined_asr.setChecked(combined)
-                    self.combined_asr.blockSignals(False)
                 for resource in self.resources:
                     if resource.key in ASR_MODELS:
                         resource.required = required_model(self.cfg, resource.key)
@@ -1814,6 +1794,7 @@ class MainWindow(QMainWindow):
                         resource.required = recognition == 'asr_qwen_model'
                 if self.resources:
                     self.resources_checked(self.resources)
+            self.sync_recognition_choice()
             self.cfg["source_lang"] = language
             self.refresh_audio_tracks(project['input'], selected_track(project), fallback=False,
                                       known_count=project.get('audio_track_count', 0))

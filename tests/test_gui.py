@@ -117,7 +117,7 @@ class ResourceTests(unittest.TestCase):
 
 try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication, QMessageBox, QLabel, QLineEdit, QCheckBox, QPushButton
+    from PySide6.QtWidgets import QApplication, QMessageBox, QLabel, QLineEdit, QCheckBox, QPushButton, QRadioButton
     from PySide6.QtCore import QMimeData, QUrl, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QDragEnterEvent, QDropEvent
     from voxlate.resources import CATALOG
@@ -376,27 +376,90 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.window.tabs.tabText(1), "资源配置")
         self.assertFalse(hasattr(self.window, "resource_boxes"))
 
-    def test_combined_checkbox_disables_only_asr_radios_and_requires_both_models(self):
+    def test_four_recognition_radios_are_exclusive_and_combined_requires_both_models(self):
         results = check_resources(self.window.cfg, self.window.config_path, quick=True)
         self.window.resources_checked(results)
         heading = self.window.resource_nodes['asr_turbo_model'].parent()
         index = heading.indexOfChild(self.window.resource_nodes['asr_turbo_model'])
-        self.assertIs(self.window.resource_tree.itemWidget(heading.child(index+1),0).findChild(QCheckBox),self.window.combined_asr)
+        self.assertIs(self.window.resource_tree.itemWidget(heading.child(index+1),0).findChild(QRadioButton),self.window.combined_asr)
         self.assertIs(heading.child(index+2),self.window.resource_nodes['asr_qwen_model'])
         self.assertEqual(self.window.combined_asr.text(),'综合识别（turbo + v3）')
         with patch.object(self.window, 'inspect'):
-            self.window.combined_asr.setChecked(True)
+            self.window.combined_asr.click()
         self.assertTrue(self.window.cfg['asr']['combined'])
-        self.assertTrue(all(not button.isEnabled() for button in self.window.asr_model_buttons.values()))
+        self.assertEqual(len(self.window.asr_model_group.buttons()), 4)
+        self.assertEqual(sum(b.isChecked() for b in self.window.asr_model_group.buttons()), 1)
+        self.assertTrue(all(button.isEnabled() for button in self.window.asr_model_buttons.values()))
         self.assertTrue(all(button.isEnabled() for button in self.window.model_buttons.values()))
         checked = check_resources(self.window.cfg, self.window.config_path, quick=True)
         self.assertEqual({r.key for r in checked if r.required and r.key in self.window.asr_model_buttons},
                          {'asr_large_model', 'asr_turbo_model'})
         self.window.resources_checked(checked)
         self.assertTrue(self.window.combined_asr.isChecked())
-        with patch.object(self.window, 'inspect'):
-            self.window.combined_asr.setChecked(False)
+        with patch.object(self.window, 'inspect') as inspect:
+            self.window.asr_model_buttons['asr_turbo_model'].click()
+        inspect.assert_called_once()
+        self.assertFalse(self.window.cfg['asr']['combined'])
+        self.assertFalse(self.window.combined_asr.isChecked())
         self.assertTrue(all(button.isEnabled() for button in self.window.asr_model_buttons.values()))
+
+    def test_recognition_radio_switches_all_four_modes_and_preserves_settings(self):
+        from voxlate.recognition_models import selected_key
+        self.window.cfg['asr']['combined'] = True
+        self.window.resources_checked(check_resources(self.window.cfg, self.window.config_path, quick=True))
+        self.assertTrue(self.window.combined_asr.isChecked())
+        for key in ('asr_qwen_model', 'asr_combined', 'asr_large_model', 'asr_combined', 'asr_turbo_model'):
+            with self.subTest(key=key), patch.object(self.window, 'inspect') as inspect:
+                self.window.asr_model_buttons[key].click()
+                inspect.assert_called_once()
+                saved = load_config(self.window.config_path)
+                self.assertEqual(saved['asr']['combined'], key == 'asr_combined')
+                if key == 'asr_combined':
+                    self.assertNotEqual(selected_key(saved), 'asr_qwen_model')
+                    self.assertNotIn('python', saved['asr'])
+                else:
+                    self.assertEqual(selected_key(saved), key)
+                self.assertEqual(sum(b.isChecked() for b in self.window.asr_model_group.buttons()), 1)
+                self.assertTrue(self.window.asr_model_buttons[key].isChecked())
+        with patch.object(self.window, 'inspect') as inspect:
+            self.window.asr_model_buttons['asr_turbo_model'].click()
+            inspect.assert_not_called()
+        self.window.set_resource_controls_enabled(False)
+        self.assertTrue(all(not b.isEnabled() for b in self.window.asr_model_group.buttons()))
+
+    def test_recognition_radio_cancel_and_save_failure_restore_selection(self):
+        for combined in (False, True):
+            self.window.cfg['asr']['combined'] = combined
+            self.window.resources_checked(check_resources(self.window.cfg, self.window.config_path, quick=True))
+            old = copy.deepcopy(self.window.cfg)
+            previous = self.window.recognition_choice()
+            with patch.object(self.window, 'inspect') as inspect, \
+                 patch.object(self.window, 'confirm_discard', return_value=False):
+                self.window.asr_model_buttons['asr_qwen_model'].click()
+                inspect.assert_not_called()
+            self.assertEqual(self.window.cfg, old)
+            self.assertTrue(self.window.asr_model_buttons[previous].isChecked())
+            with patch.object(self.window, 'inspect') as inspect, \
+                 patch.object(self.window, 'save_settings', side_effect=OSError('test failure')), \
+                 patch.object(QMessageBox, 'warning'):
+                self.window.asr_model_buttons['asr_qwen_model'].click()
+                inspect.assert_not_called()
+            self.assertEqual(self.window.cfg, old)
+            self.assertTrue(self.window.asr_model_buttons[previous].isChecked())
+
+    def test_loading_combined_and_turbo_projects_updates_radio_selection(self):
+        self.window.resources_checked(check_resources(self.window.cfg, self.window.config_path, quick=True))
+        video = Path(self.directory.name) / 'sample.mp4'
+        video.write_bytes(b'fixture')
+        for key in ('asr_combined', 'asr_turbo_model', 'asr_combined'):
+            path = video.with_suffix('.mp4.voxlate') / key / 'project.json'
+            write_json(path, dict(schema_version=1, name='voxlate', input=str(video.resolve()), duration=2,
+                                 recognition_model=key, segments=[dict(id=1, start=0, end=1,
+                                                                     source_text='Hello', target_text='你好')]))
+            self.window.load_project(path)
+            self.assertEqual(self.window.recognition_choice(), key)
+            self.assertTrue(self.window.asr_model_buttons[key].isChecked())
+            self.assertEqual(sum(b.isChecked() for b in self.window.asr_model_group.buttons()), 1)
 
     def test_space_column_uses_measurements_and_log_reports_total(self):
         from voxlate.resources import ResourceInspection
