@@ -6,8 +6,9 @@
 - 可下载版本：[Windows 测试版及对应源码](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.1)。
 - 维护基线：[milestone/chinese-output](https://github.com/redimocteer/voxlate/tree/milestone/chinese-output)。
 - 基线提交：`f419374979acace20123a26d37b8f1ddb5d699d4`。
+- 后续修复版：[v0.1.0-beta.2](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.2)，修复日语识别启动错误并支持框选原文／译文后复制。
 
-三语言开发不移动这个标签，也不替换已有 Release 附件。旧版需要修复时，在维护分支另发新版本。
+三语言开发不移动这个标签，也不替换已有 Release 附件。旧版修复在 `main` 另发新版本，`milestone/chinese-output` 保留初始基线。
 
 ## 0.2 开发：中、英、日互转
 
