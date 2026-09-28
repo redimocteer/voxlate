@@ -7,7 +7,7 @@
     "translation", "text-to-speech", "speaker-diarization", "windows",
     "python", "pyside6"
   ],
-  "release_tag": "v0.1.0-beta.1",
-  "release_title": "Voxlate v0.1.0-beta.1 · Windows 测试版",
+  "release_tag": "v0.1.0-beta.2",
+  "release_title": "Voxlate v0.1.0-beta.2 · 日语识别修复与文字复制",
   "prerelease": true
 }

@@ -1,6 +1,6 @@
 # 从建仓库到发布下载包
 
-目标仓库：[redimocteer/voxlate](https://github.com/redimocteer/voxlate)。首版标签：`v0.1.0-beta.1`，公开测试版。此页是可重复使用的操作说明，不代表每一步已在远端完成。
+目标仓库：[redimocteer/voxlate](https://github.com/redimocteer/voxlate)。当前标签：`v0.1.0-beta.2`，公开测试版。此页是可重复使用的操作说明，不代表每一步已在远端完成。
 
 ## 1. 创建空仓库
 
@@ -62,10 +62,10 @@ python scripts/prepare_release.py
 
 脚本构建目录版 EXE，下载对应 Qt / PySide6 / FFmpeg 源码，收集许可，生成文件清单与 SHA-256；不会登录或上传 GitHub。当前锁定 Qt 6.8.3，升级库后必须同步核对来源清单。已有同名候选目录时脚本会停止，避免混入旧文件。
 
-输出在 `dist/releases/v0.1.0-beta.1/`：
+输出在 `dist/releases/v0.1.0-beta.2/`：
 
-- `Voxlate-v0.1.0-beta.1-windows-x64.zip`：用户运行包。
-- `Voxlate-v0.1.0-beta.1-third-party-sources.zip`：对应第三方源码，用户运行时不需要下载。
+- `Voxlate-v0.1.0-beta.2-windows-x64.zip`：用户运行包。
+- `Voxlate-v0.1.0-beta.2-third-party-sources.zip`：对应第三方源码，用户运行时不需要下载。
 - `SHA256SUMS.txt`：两份附件的校验值。
 
 必须先完成 [发行核对](RELEASE_REVIEW.md)，解压到独立测试目录，检查 EXE 启动、播放器、截图和许可材料。不包含模型和用户项目；不要上传整个 `dist` 或资源目录。
@@ -74,9 +74,9 @@ python scripts/prepare_release.py
 
 在 GitHub 仓库点击 **Releases → Draft a new release**：
 
-1. 创建标签 `v0.1.0-beta.1`，Target 选择本轮完成检查的提交。
-2. Title：`Voxlate v0.1.0-beta.1 · Windows 测试版`。
-3. 正文复制 [首版发布说明](RELEASE_NOTES_v0.1.0-beta.1.md)。
+1. 创建标签 `v0.1.0-beta.2`，Target 选择本轮完成检查的提交。
+2. Title：`Voxlate v0.1.0-beta.2 · Windows 测试版`。
+3. 正文复制 [本版发布说明](RELEASE_NOTES_v0.1.0-beta.2.md)。
 4. 上传上面三份附件，等待全部上传完成。
 5. 勾选 **This is a pre-release**。测试版不使用 `releases/latest` 作为下载入口。
 6. 核对无误后 **Publish release**；还有未解决的发行检查项时使用 **Save draft**，草稿附件不对公众可见。
@@ -93,7 +93,7 @@ git commit -m "Describe this change"
 git push
 ```
 
-新版使用新标签，例如 `v0.1.0-beta.2`；不要覆盖旧版本附件或移动已发布标签。中日英互转可在 `feature/language-directions` 分支开发，验证后合入。
+新版使用新标签，例如 `v0.1.0-beta.3`；不要覆盖旧版本附件或移动已发布标签。中日英互转可在 `feature/three-language` 分支开发，验证后合入。
 
 ## 可以让助手代办哪些步骤
 
