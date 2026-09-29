@@ -33,6 +33,9 @@ class QwenCheckpoint:
                     for chunk, aligned in zip(chunks, alignments):
                         if aligned['chunk'] != chunk or not isinstance(aligned['words'], list):
                             raise ValueError('invalid alignment')
+                        if 'timing_fallback' in aligned and (aligned['timing_fallback'] is not True or
+                                aligned['words'] or not chunk['text']):
+                            raise ValueError('invalid alignment fallback')
                         for word in aligned['words']:
                             if (not isinstance(word['text'], str) or
                                 not all(type(word[k]) in (int, float) and math.isfinite(word[k]) for k in ('start_time', 'end_time')) or
