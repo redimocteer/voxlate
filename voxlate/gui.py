@@ -413,7 +413,7 @@ class MainWindow(QMainWindow):
         self.voice_group = QButtonGroup(self)
         for button in (self.uniform_voice, self.individual_voice, self.role_voice):
             self.voice_group.addButton(button)
-        self.uniform_voice.setChecked(True)
+        self.individual_voice.setChecked(True)
         voice_row.addWidget(self.uniform_voice)
         voice_row.addWidget(QLabel('第'))
         self.reference_sentence = ReferenceSentenceBox()
@@ -1250,7 +1250,7 @@ class MainWindow(QMainWindow):
                 player.close()
 
     def restore_voice_selection(self):
-        mode, ident = voice_selection(self.project)
+        mode, ident = voice_selection(self.project) if self.project is not None else ('individual', None)
         if automatic_reference(self.project):
             ident = None
         segments = (self.project or {}).get('segments', [])
