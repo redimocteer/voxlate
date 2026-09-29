@@ -12,14 +12,15 @@ A local Windows tool for dubbing English or Japanese videos into Simplified Chin
 
 1. Open `voxlate.exe`, choose a resource folder in **资源配置** (Resources), and run **一键准备** (Prepare all). The packaged app needs no preinstalled Python; AI environments and models are installed separately.
 2. Browse to or drop a video into **视频配音** (Video dubbing). Select **English → Chinese** or **Japanese → Chinese** manually; source language does not switch automatically.
-3. Run **① 识别** (Recognize). Check text and timing. Repeating this step asks for confirmation, then replaces manual boundaries, include/discard choices and translations. Successful runs back up the old project in `history/automatic-recognition`; failures preserve it.
-4. Run **② 翻译** (Translate). This uses existing sentences without recognition. Double-click translations to edit; changes save automatically. Replacing existing translations asks for confirmation and backs them up in `history/translation`. Each validated batch saves resume progress. After failure or cancellation, unchanged text, context and model settings allow resuming completed batches. Table translations are replaced only when the whole run succeeds; clicking Translate again after success starts a fresh run.
-5. Select a voice mode and run **③ 生成配音** (Generate speech). Preview lines; edit and use the red **●** to regenerate a line.
-6. Run **④ 导出视频** (Export video). Output defaults to `video-name.zh.mp4` beside the input, with overwrite confirmation. The player offers **原声** (Original audio) comparison and remembers volume.
+3. Run **① 分离** (Separate) to extract the selected track and separate vocals from the background. Matching audio is reused without loading recognition models.
+4. Run **② 识别** (Recognize) on the prepared vocals. Qwen resumes completed recognition chunks and alignment when audio, models and settings match. To start fresh, stop processing and delete `recognition/` inside the current recognition project. Legacy caches without validation are rebuilt; other recognition models do not yet resume individual chunks. Replacing existing sentences requires confirmation and replaces manual boundaries, include/discard choices and translations. Successful runs back up the old project in `history/automatic-recognition`; failures preserve it.
+5. Run **③ 翻译** (Translate). This uses existing sentences without recognition. Double-click translations to edit; changes save automatically. Replacing existing translations asks for confirmation and backs them up in `history/translation`. Each validated batch saves resume progress. After failure or cancellation, unchanged text, context and model settings allow resuming completed batches. Table translations are replaced only when the whole run succeeds; clicking Translate again after success starts a fresh run.
+6. Select a voice mode and run **④ 生成配音** (Generate speech). Preview lines; edit and use the red **●** to regenerate a line.
+7. Run **⑤ 导出视频** (Export video). Output defaults to `video-name.zh.mp4` beside the input, with overwrite confirmation. The player offers **原声** (Original audio) comparison and remembers volume.
 
 Translation must exist before dubbing. All selected lines need speech matching the current text and voice settings before export. Export processes existing audio without rerunning recognition, translation or voice cloning.
 
-The blue **一键导出** (One-click export) resumes missing or outdated steps, preserving existing segmentation and valid translations and reusing matching speech. New projects run all four steps with saved checkpoints, so a translation failure does not require recognition again.
+The blue **一键导出** (One-click export) resumes missing or outdated steps, preserving existing segmentation and valid translations and reusing matching speech. New projects run all five steps with saved checkpoints, so a translation failure does not require recognition again.
 
 For multiple audio tracks, use the dropdown after **清空项目** (Clear project). It shows the number, language, title and channel layout. The first track is the default; selection is remembered inside the video's project folder. Multi-track projects and exports are numbered from `audio-1`, then `audio-2`, etc.; single-track videos have no suffix. Each track keeps separate results. Legacy first-track projects without a suffix are reused in place. Recognition, original previews and export use the selected track; choose the translation source language separately.
 
@@ -172,7 +173,7 @@ python main.py --config "$env:LOCALAPPDATA\voxlate\config.json" --doctor
 python main.py "D:\videos\movie.mkv" --config "$env:LOCALAPPDATA\voxlate\config.json" --source-lang ja --stop-after translate
 ```
 
-Use `--stop-after recognize` to save recognition only, `--translate-only` to translate saved sentences, or `--auto-export` to resume through export. The existing `--stop-after translate` still means recognize and translate, then pause.
+Use `--stop-after separate` to prepare separated audio only, `--stop-after recognize` to separate as needed and save recognition, `--translate-only` to translate saved sentences, or `--auto-export` to resume through export. The existing `--stop-after translate` still means recognize and translate, then pause.
 
 Use `--audio-track 2` for the second audio track (numbering starts at 1); use the same number for subsequent steps.
 

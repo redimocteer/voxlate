@@ -1210,7 +1210,7 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(hasattr(self.window, 'reference'))
         self.assertEqual(self.window.uniform_voice.text(), '统一音色')
         self.assertEqual(self.window.individual_voice.text(), '逐句音色')
-        for text in ('① 识别', '② 翻译', '③ 生成配音', '④ 导出视频', '一键导出'):
+        for text in ('① 分离', '② 识别', '③ 翻译', '④ 生成配音', '⑤ 导出视频', '一键导出'):
             self.assertIn(text, buttons)
         self.assertIn('清空项目', buttons)
 
@@ -1221,8 +1221,9 @@ class GuiTests(unittest.TestCase):
         write_json(path, dict(schema_version=1, name='voxlate', input=str(video), duration=2,
             segments=[dict(id=1, start=0, end=1, source_text='Hello', target_text='')]))
         self.window.load_project(path)
-        for stage, missing_keys in [('translate', ['asr_large_model', 'separator', 'tts']),
-                                    ('recognize', ['hy7_model', 'llm_engine', 'tts']),
+        for stage, missing_keys in [('separate', ['asr_large_model', 'qwen', 'runtime', 'hy7_model', 'tts']),
+                                    ('translate', ['asr_large_model', 'separator', 'tts']),
+                                    ('recognize', ['hy7_model', 'llm_engine', 'tts', 'separator', 'separator_model']),
                                     ('auto', ['asr_large_model', 'separator'])]:
             with self.subTest(stage=stage), patch.object(QMessageBox, 'question', return_value=QMessageBox.StandardButton.Yes), patch.object(self.window, 'start_task') as start:
                 self.window.start_pipeline(stage)
@@ -1261,6 +1262,7 @@ class GuiTests(unittest.TestCase):
                 kwargs = pipeline.return_value.process.call_args.kwargs
                 self.assertEqual(kwargs['force_translation'], stage == 'translate')
                 self.assertEqual(kwargs['force_recognition'], stage == 'recognize')
+                self.assertEqual(kwargs['recognition_only'], stage == 'recognize')
                 self.assertEqual(kwargs['translate_only'], stage == 'translate')
                 self.assertEqual(kwargs['force_tts'], stage == 'dub')
         with patch.object(QMessageBox, 'question') as question, patch.object(self.window, 'start_task') as start:

@@ -226,7 +226,7 @@ class VideoDubPipeline:
     def process(self, video_path, output_path, work_dir, speaker_ref=None, stop_after=None, reference_range=None,
                 *, require_translated=False, auto_reference=None, export_only=False, sentence_ids=None, force_tts=False,
                 voice_mode=None, reference_sentence_id=None, force_translation=False, force_recognition=False,
-                translate_only=False, auto_export=False):
+                translate_only=False, auto_export=False, recognition_only=False):
         video, output = Path(video_path).resolve(), Path(output_path).resolve()
         self.work = Path(work_dir).resolve()
         if not video.is_file():
@@ -247,6 +247,9 @@ class VideoDubPipeline:
         self.force_translation = force_translation
         self.force_recognition = force_recognition
         self.translate_only, self.auto_export = translate_only, auto_export
+        self.recognition_only = recognition_only
+        if recognition_only and (stop_after != 'recognize' or auto_export or export_only):
+            raise VoxlateError('单独识别仅能用于识别步骤')
         self.defer_project_save = False
         if force_recognition and stop_after not in ('recognize', 'translate'):
             raise VoxlateError('重新识别仅能用于识别步骤')
@@ -266,7 +269,7 @@ class VideoDubPipeline:
         with project_lock(self.work):
             started = time.perf_counter()
             label = '一键导出' if auto_export else ('导出视频' if export_only else
-                {'recognize':'识别', 'translate':'翻译' if translate_only else '识别并翻译', 'dub':'生成配音'}.get(stop_after, '配音并导出'))
+                {'separate':'分离', 'recognize':'识别', 'translate':'翻译' if translate_only else '识别并翻译', 'dub':'生成配音'}.get(stop_after, '配音并导出'))
             outcome = "未完成"
             try:
                 result = self._process(video, output, speaker_ref, stop_after)
@@ -335,33 +338,53 @@ class VideoDubPipeline:
         self.project["reference_range"] = selected
         self.project["auto_reference"] = self.auto_reference if self.auto_reference is not None else not (speaker_ref or selected)
         cfg = self.cfg
-        stamps = {name: digest(CACHE_VERSION, cfg[name], model_stamp(cfg[name]["model_path"]))
-                  for name in ("separator", "asr")}
-        if cfg['asr'].get('combined', False):
+        # Recognition can reuse prepared audio even if the separation runtime or
+        # weights were removed. Its saved signature still must match the settings.
+        prepared_key = digest(CACHE_VERSION, input_key, track, cfg['separator'], cfg['audio']['sample_rate'])
+        prepared = self.project.get('prepared_audio_key') == prepared_key
+        audio = self.work / 'original.wav'
+        stems_root = self.work / 'separated' / cfg['separator']['model'] / audio.stem
+        vocals, background = stems_root / 'vocals.wav', stems_root / 'no_vocals.wav'
+        if self.recognition_only and (not prepared or not all(p.is_file() and p.stat().st_size for p in (audio, vocals, background))):
+            raise VoxlateError('请先点击「① 分离」准备当前音轨，再识别。已有分离文件会尽量复用。')
+        stamps = {}
+        if not self.recognition_only:
+            stamps['separator'] = digest(CACHE_VERSION, cfg['separator'], model_stamp(cfg['separator']['model_path']))
+        if stop_after != 'separate':
+            stamps['asr'] = digest(CACHE_VERSION, cfg['asr'], model_stamp(cfg['asr']['model_path']))
+        if stop_after != 'separate' and cfg['asr'].get('combined', False):
             from .combined_asr import VERSION
             models = Path(cfg['asr']['model_path']).parent
             stamps['asr'] = digest(stamps['asr'], VERSION,
                 [model_stamp(models / name) for name in ('faster-whisper-large-v3', 'faster-whisper-large-v3-turbo')])
-        sep_key = digest(input_key, stamps["separator"])
-        if track:
+        sep_key = self.project.get('stages', {}).get('separate', {}).get('key') if self.recognition_only else digest(input_key, stamps['separator'])
+        if track and not self.recognition_only:
             sep_key = digest(sep_key, 'audio-track', track)
-        asr_key = digest(sep_key, stamps["asr"])
+        asr_key = digest(sep_key, stamps['asr']) if stop_after != 'separate' else self.project.get('asr_key')
         # Reject incompatible settings before replacing separated audio or saving
         # stage metadata that still belongs to the existing transcript.
         if self.project["segments"] and self.project.get("asr_key") != asr_key and not self.force_recognition:
             raise VoxlateError("识别模型或分离配置已变化；请恢复原设置后继续，或备份后清空项目再识别。命令行可指定新的 --work-dir。")
+        if stop_after == 'separate' and self.project['segments'] and self.project.get('stages', {}).get('separate', {}).get('key') != sep_key:
+            raise VoxlateError('分离设置已变化；请先备份并清空当前项目，避免旧分句与新音频混用。')
         self.save()
-        audio = self.work / "original.wav"
         extract_key = digest(CACHE_VERSION, input_key, duration)
         if track:
             extract_key = digest(extract_key, 'audio-track', track)
-        self.stage("extract", extract_key, [audio],
-                   lambda: self.media.extract(video, audio, duration, track))
-        stems_root = self.work / "separated" / cfg["separator"]["model"] / audio.stem
-        vocals, background = stems_root / "vocals.wav", stems_root / "no_vocals.wav"
-        self.stage("separate", sep_key, [vocals, background],
-                   lambda: self.runner("separator", {"audio": str(audio), "directory": str(self.work / "separated")}))
+        if not self.recognition_only:
+            self.stage("extract", extract_key, [audio],
+                       lambda: self.media.extract(video, audio, duration, track))
+        if not self.recognition_only:
+            self.stage("separate", sep_key, [vocals, background],
+                       lambda: self.runner("separator", {"audio": str(audio), "directory": str(self.work / "separated")}))
+        self.project['prepared_audio_key'] = prepared_key
         self.project['separator_model'] = cfg['separator']['model']
+        self.save()
+        if stop_after == 'separate':
+            from .recognition_models import selected_key as selected_asr_key
+            self.project.setdefault('recognition_model', 'asr_combined' if cfg['asr'].get('combined', False) else selected_asr_key(cfg))
+            self.save()
+            return project_path
         if self.force_recognition or self.project.get("asr_key") != asr_key:
             LOG.info("开始%s识别", "日文" if self.source_lang == "ja" else "英文")
             raw = self.runner("asr", {"audio": str(vocals)})
