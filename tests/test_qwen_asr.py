@@ -4,7 +4,8 @@ import unittest
 from test_pipeline import TestDirectory
 from voxlate.app_settings import prepare_settings
 from voxlate.common import load_config, VoxlateError
-from voxlate.qwen_recognition import aligned_segments
+from voxlate.qwen_recognition import aligned_segments, recognize_chunk, next_chunk_end
+from unittest.mock import Mock, patch
 from voxlate.recognition_models import select_model, required_model
 from voxlate.installer import resource_root, planned_stages
 from voxlate.diagnostics import check_resources
@@ -13,6 +14,22 @@ from voxlate.runtime import worker_command
 
 
 class QwenTests(unittest.TestCase):
+    def test_time_limited_result_is_never_accepted_as_complete(self):
+        model = Mock()
+        model.transcribe.return_value = [Word(text='Incomplete text')]
+        with patch('voxlate.qwen_recognition.time.monotonic', side_effect=[0, 45.01]):
+            with self.assertRaises(TimeoutError):
+                recognize_chunk(model, [], 'English', 45)
+
+    def test_short_chunk_uses_quiet_region_and_preserves_final_tail(self):
+        import numpy as np
+        source = Mock(samplerate=100, frames=3000)
+        samples = np.ones((400, 2), dtype=np.float32)
+        samples[100:120] = 0
+        source.read.return_value = samples
+        self.assertEqual(next_chunk_end(source, 0), 910)
+        self.assertEqual(next_chunk_end(source, 2500), 3000)
+
     def test_preserves_english_spelling_punctuation_and_offsets(self):
         words = [Word(text=t, start_time=i*.5, end_time=i*.5+.4)
                  for i,t in enumerate(['Hello', "I'm", 'Anna', 'Come', 'here'])]

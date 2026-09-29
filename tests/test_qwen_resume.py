@@ -161,3 +161,51 @@ class QwenResumeTests(unittest.TestCase):
         for invalid in (dict(good, first_frame=2), dict(good, end=float('nan')), dict(good, last_frame=99999999)):
             with self.assertRaises(ValueError):
                 QwenCheckpoint.validate_chunks([invalid], 16000, 32000)
+
+    def test_legacy_long_chunk_resumes_with_short_contiguous_chunks(self):
+        with patch.object(FakeAudio, 'frames', 40*FakeAudio.samplerate):
+            checkpoint = QwenCheckpoint(self.audio, self.cfg, self.root/'recognition',
+                FakeAudio.samplerate, FakeAudio.frames, lambda _: None)
+            old = dict(start=0, end=25, first_frame=0, last_frame=25*16000, text='Hello.')
+            checkpoint.chunks.append(old)
+            checkpoint.save()
+            from voxlate.qwen_recognition import recognize_chunk
+            count = [0]
+            def first_timeout(*args):
+                count[0] += 1
+                if count[0] == 1:
+                    raise TimeoutError()
+                return recognize_chunk(*args)
+            with patch('voxlate.qwen_recognition.recognize_chunk', side_effect=first_timeout):
+                self.run_asr()
+            chunks = read_json(self.root/'recognition/qwen_transcript.json')
+            self.assertEqual(chunks[0], old)
+            self.assertEqual(chunks[-1]['last_frame'], FakeAudio.frames)
+            self.assertTrue(all(a['last_frame']==b['first_frame'] for a,b in zip(chunks,chunks[1:])))
+            self.assertTrue(all(c['end']-c['start']<=12 for c in chunks[1:]))
+            self.assertEqual(self.asr.transcribe.call_count, len(chunks)-1)
+
+    def test_timeout_retries_smaller_range_without_committing_partial_text(self):
+        from voxlate.qwen_recognition import recognize_chunk
+        calls = []
+        def slow_first(model, samples, language, timeout):
+            calls.append(len(samples))
+            if len(calls)==1:
+                raise TimeoutError()
+            return recognize_chunk(model, samples, language, timeout)
+        with patch('voxlate.qwen_recognition.recognize_chunk', side_effect=slow_first):
+            self.run_asr()
+        chunks = read_json(self.root/'recognition/qwen_transcript.json')
+        self.assertLess(calls[1], calls[0])
+        self.assertEqual(chunks[0]['first_frame'], 0)
+        self.assertLessEqual(chunks[0]['end'], 12)
+        self.assertEqual(chunks[-1]['last_frame'], FakeAudio.frames)
+        self.assertTrue(all(a['last_frame']==b['first_frame'] for a,b in zip(chunks,chunks[1:])))
+
+    def test_repeated_timeout_stops_without_saving_truncated_text(self):
+        from voxlate.common import VoxlateError
+        with patch('voxlate.qwen_recognition.recognize_chunk', side_effect=TimeoutError()) as recognize:
+            with self.assertRaisesRegex(VoxlateError, '此前进度保留'):
+                self.run_asr()
+        self.assertEqual(recognize.call_count, 4)
+        self.assertFalse((self.root/'recognition/qwen_transcript.json').exists())

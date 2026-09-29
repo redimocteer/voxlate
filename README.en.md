@@ -24,6 +24,8 @@ Translation includes discarded sentences. Include/discard controls dubbing only;
 
 If Qwen cannot align a chunk, other chunks continue. Its text and coarse chunk boundaries are retained, but dubbing is disabled to preserve the original audio. The log identifies sentences to review and repair with manual segmentation; alignment diagnostics stay in the project's `recognition/` folder.
 
+Automatic Qwen recognition retains normal 20–30 second inputs, retrying slow generation with roughly 8–12 second chunks and smaller ranges if needed, preferring low-energy cut points. The model stays loaded while unused GPU cache is released between chunks. Timed-out text is never saved; repeated failure stops with prior progress intact. Completed legacy chunks remain reusable. Review boundaries, omissions, repetitions and background-music hallucinations; low energy does not guarantee a speech boundary.
+
 The blue **一键导出** (One-click export) resumes missing or outdated steps, preserving existing segmentation and valid translations and reusing matching speech. New projects run all five steps with saved checkpoints, so a translation failure does not require recognition again.
 
 For multiple audio tracks, use the dropdown after **清空项目** (Clear project). It shows the number, language, title and channel layout. The first track is the default; selection is remembered inside the video's project folder. Multi-track projects and exports are numbered from `audio-1`, then `audio-2`, etc.; single-track videos have no suffix. Each track keeps separate results. Legacy first-track projects without a suffix are reused in place. Recognition, original previews and export use the selected track; choose the translation source language separately.
