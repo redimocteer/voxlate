@@ -572,6 +572,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.window.table.item(0, 2).text(), "你好")
 
     def test_voice_sentence_selection_persists_and_resets_for_other_video(self):
+        self.assertTrue(self.window.individual_voice.isChecked())
         folder = Path(self.directory.name)
         video = folder/'source.mp4'
         video.write_bytes(b'fixture')
@@ -627,7 +628,7 @@ class GuiTests(unittest.TestCase):
         other = folder/'other.mp4'
         other.write_bytes(b'other')
         self.window.video_selected(str(other))
-        self.assertTrue(self.window.uniform_voice.isChecked())
+        self.assertTrue(self.window.individual_voice.isChecked())
         self.assertEqual(self.window.reference_sentence.value(), 0)
         self.assertEqual(self.window.reference_sentence.text(), '')
         self.assertEqual(self.window.reference_sentence.lineEdit().placeholderText(), '自动推荐')

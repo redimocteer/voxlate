@@ -58,7 +58,7 @@ Approximate model sizes: v3 **3.09 GB**, turbo **1.62 GB**, Qwen with alignment 
 | Mode | Use |
 | --- | --- |
 | Shared voice | One reference throughout, suitable for one speaker; leave the line number empty for automatic recommendation, or enter a specific number |
-| Per-line voice | Each line uses its original vocals; useful for multiple speakers, but short or emotional clips can sound inconsistent |
+| Per-line voice (default for new projects) | Each line uses its original vocals; useful for multiple speakers, but short or emotional clips can sound inconsistent |
 | Per-character voice | Fixed references reduce variation within each character; automatic groups can be corrected manually |
 
 All modes reference the **current line's original emotion**. A fixed voice does not imply fixed emotion or matching duration. External reference files and video-range selection are currently unavailable in the GUI.
