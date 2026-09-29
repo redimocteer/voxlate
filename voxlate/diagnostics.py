@@ -1,5 +1,5 @@
 """Actionable readiness checks shared by the GUI and CLI."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 import shutil
@@ -21,6 +21,16 @@ class ResourceStatus:
     instructions: str
     url: str = ""
     required: bool = True
+
+
+def resource_required(cfg, key):
+    if key in ASR_MODELS:
+        return required_model(cfg, key)
+    if key in MODELS:
+        return key == selected_key(cfg)
+    if key == 'qwen':
+        return not cfg['asr'].get('combined', False) and is_qwen(cfg)
+    return True
 
 
 def ps_quote(value):
@@ -75,8 +85,10 @@ def check_resources(cfg, config_path, report=None, probe=probe_runtime, *, keys=
             selected.update(("runtime", "qwen", "separator", "tts"))
 
     def reuse(key):
-        if selected is not None and key not in selected and key in prior:
-            results.append(prior[key])
+        if selected is not None and key not in selected:
+            item = prior.get(key) or ResourceStatus(key, CATALOG[key].title if key in CATALOG else key,
+                False, '尚未检查；使用时检查，或点击「检查」。', '')
+            results.append(replace(item, required=resource_required(cfg, key)))
             return True
         return False
 

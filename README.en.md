@@ -44,7 +44,7 @@ Approximate model sizes: v3 **3.09 GB**, turbo **1.62 GB**, Qwen with alignment 
 
 - **Prefer mirrors** defaults on for ordinary Python packages and Hugging Face models, falling back to original hosts. Some sources, including GitHub and PyTorch, still use their original hosts. Logs show the source.
 - **Stop** retains completed files. Retrying attempts reuse or resume where supported; otherwise files restart. Percentages are estimates; a quiet log alone does not prove a hang.
-- Startup reuses unchanged resource status. Click **Check** after external changes. Changing the resource folder does not move existing installations.
+- Startup and model or device changes reuse the last resource status. Each processing step checks only the resources it needs; **Check** refreshes everything. Changing the resource folder checks the new location without moving existing installations.
 - **Delete…** shows purpose, path and size before confirmation. Reinstallation retrieves the app's specified version; there is no automatic upgrade button.
 - PyTorch belongs to an environment, not a language or voice model. Different environments may need different versions. Separation, voice cloning and Qwen have independent environments.
 - Select devices in each environment's **Settings…**. CPU support depends on the model, and CPU dubbing can be slow. Enable BF16 only on supported hardware. Moving the EXE does not move its settings or resources.

@@ -32,7 +32,7 @@ class ResourceTests(unittest.TestCase):
                     probe=lambda *args: self.fail("unchanged environment was checked"), report=reported.append)
             self.assertEqual([r.key for r in reported], ["asr_turbo_model"])
             self.assertTrue(next(r.ready for r in updated if r.key == "asr_turbo_model"))
-            self.assertIs(next(r for r in updated if r.key == "tts"), next(r for r in cached if r.key == "tts"))
+            self.assertEqual(next(r for r in updated if r.key == "tts"), next(r for r in cached if r.key == "tts"))
             self.assertEqual(updated.sizes["asr_turbo_model"], 15)
 
     def test_device_change_checks_only_its_environment_without_disk_scan(self):
@@ -154,7 +154,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.window.cfg['audio_track'], 1)
         self.assertNotIn('audio_track', read_json(self.window.config_path))
         self.assertNotIn('audio_track_count', read_json(self.window.config_path))
-        with patch.object(self.window, 'inspect'):
+        with patch.object(self.window, 'restore_resources'):
             self.window.change_storage(Path(self.directory.name)/'new-resources')
         self.assertEqual(self.window.cfg['audio_track'], 1)
         self.assertNotIn('audio_track', read_json(self.window.config_path))
@@ -398,7 +398,7 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(self.window.combined_asr.isChecked())
         with patch.object(self.window, 'inspect') as inspect:
             self.window.asr_model_buttons['asr_turbo_model'].click()
-        inspect.assert_called_once()
+        inspect.assert_not_called()
         self.assertFalse(self.window.cfg['asr']['combined'])
         self.assertFalse(self.window.combined_asr.isChecked())
         self.assertTrue(all(button.isEnabled() for button in self.window.asr_model_buttons.values()))
@@ -411,7 +411,7 @@ class GuiTests(unittest.TestCase):
         for key in ('asr_qwen_model', 'asr_combined', 'asr_large_model', 'asr_combined', 'asr_turbo_model'):
             with self.subTest(key=key), patch.object(self.window, 'inspect') as inspect:
                 self.window.asr_model_buttons[key].click()
-                inspect.assert_called_once()
+                inspect.assert_not_called()
                 saved = load_config(self.window.config_path)
                 self.assertEqual(saved['asr']['combined'], key == 'asr_combined')
                 if key == 'asr_combined':
@@ -566,7 +566,7 @@ class GuiTests(unittest.TestCase):
         self.assertIn("en-whisper-large-v3", str(self.window.project_path))
         self.assertEqual(self.window.table.rowCount(), 0)
         self.assertEqual(read_json(original), project)
-        inspect.assert_called_once_with(keys=set(ASR_MODELS) | {'qwen'}, size_keys=set())
+        inspect.assert_not_called()
         self.window.load_project(original)
         self.assertEqual(asr_key(self.window.cfg), "asr_turbo_model")
         self.assertEqual(self.window.table.item(0, 2).text(), "你好")
@@ -854,6 +854,26 @@ class GuiTests(unittest.TestCase):
         self.assertIn("沿用上次", self.window.logs.toPlainText())
         self.assertEqual(self.window.model_buttons, {})
         self.assertNotIn("保存译文", [button.text() for button in self.window.findChildren(QPushButton)])
+
+    def test_model_switch_keeps_ready_states_and_cache_without_scanning(self):
+        from voxlate.resource_cache import load_resource_cache
+        results = check_resources(self.window.cfg, self.window.config_path, quick=True)
+        for item in results:
+            item.ready = True
+        results.sizes['asr_qwen_model'] = 100
+        self.window.resources_checked(results)
+        with (patch('voxlate.gui.check_resources', side_effect=AssertionError('resource check')),
+              patch('voxlate.gui.tracked_resource_paths', side_effect=AssertionError('presence scan')),
+              patch('voxlate.resources.os.walk', side_effect=AssertionError('directory scan')),
+              patch.object(self.window, 'start_task', side_effect=AssertionError('background check'))):
+            for key in ('asr_qwen_model', 'asr_combined', 'asr_turbo_model'):
+                self.window.asr_model_buttons[key].click()
+                cached = load_resource_cache(self.window.cfg, self.window.config_path)
+                self.assertIsNotNone(cached)
+                self.assertTrue(all(item.ready for item in cached))
+                self.assertEqual(cached.sizes['asr_qwen_model'], 100)
+                self.assertEqual({r.key for r in cached if r.required and r.key in self.window.asr_model_buttons},
+                                 {'asr_large_model', 'asr_turbo_model'} if key == 'asr_combined' else {key})
 
     def test_readonly_tasks_keep_resident_voice_model(self):
         with patch.object(self.window.tts_session, 'close') as close:
@@ -1163,7 +1183,7 @@ class GuiTests(unittest.TestCase):
         QTimer.singleShot(0, edit_and_save)
         with patch.object(self.window, "inspect") as inspect:
             self.window.row_buttons["separator"]["settings"].click()
-            inspect.assert_called_once_with(keys={"separator"}, size_keys=set())
+            inspect.assert_not_called()
         self.assertEqual(load_config(self.window.config_path)["separator"]["device"], "cpu")
 
     def test_unchanged_settings_keep_fixed_per_sentence_emotion(self):
