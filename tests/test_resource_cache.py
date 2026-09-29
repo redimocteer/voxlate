@@ -13,6 +13,35 @@ from voxlate.translation_models import MODELS
 
 
 class ResourceCacheTests(unittest.TestCase):
+    def test_selected_step_does_not_probe_unrelated_resources_even_without_cache(self):
+        with TestDirectory() as directory:
+            path, _ = prepare_settings(directory)
+            cfg = load_config(path)
+            with (patch('voxlate.diagnostics.probe_runtime', side_effect=AssertionError('runtime probe')),
+                  patch('voxlate.diagnostics.run_external', side_effect=AssertionError('subprocess')),
+                  patch('voxlate.diagnostics.missing_files', side_effect=AssertionError('ASR model scan')),
+                  patch('voxlate.resources.os.walk', side_effect=AssertionError('directory scan')),
+                  patch('voxlate.diagnostics.shutil.which', side_effect=AssertionError('media tool check'))):
+                results = check_resources(cfg, path, keys={'hy7_model'}, quick=True)
+            self.assertEqual({r.key for r in results}, set(CATALOG) | {'ffprobe'})
+            self.assertTrue(all('尚未检查' in r.detail for r in results if r.key != 'hy7_model'))
+
+    def test_cached_status_is_preserved_but_requirements_follow_selection(self):
+        from voxlate.recognition_models import select_model
+        from voxlate.installer import resource_root
+        with TestDirectory() as directory:
+            path, _ = prepare_settings(directory)
+            cfg = load_config(path)
+            cached = check_resources(cfg, path, quick=True)
+            for item in cached:
+                item.ready = True
+            select_model(cfg, 'asr_qwen_model', resource_root(cfg))
+            with patch('voxlate.diagnostics.missing_files', side_effect=AssertionError('scan')):
+                results = check_resources(cfg, path, keys=set(), cached=cached, quick=True)
+            self.assertTrue(all(r.ready for r in results))
+            self.assertEqual({r.key for r in results if r.required and r.key.startswith('asr_')}, {'asr_qwen_model'})
+            self.assertTrue(next(r.required for r in results if r.key == 'qwen'))
+
     def test_quick_check_never_starts_runtimes_or_scans_directories(self):
         with TestDirectory() as directory:
             path, _ = prepare_settings(directory)

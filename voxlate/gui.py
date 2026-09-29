@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from .app_settings import default_data_dir, prepare_settings
 from .common import VoxlateError, digest, load_config, read_json, write_json
-from .diagnostics import ResourceStatus, check_resources
+from .diagnostics import ResourceStatus, check_resources, resource_required
 from .installer import Installer, planned_stages, relocate, resource_root
 from .media import set_cancel_event
 from .pipeline import VideoDubPipeline, project_lock
@@ -578,19 +578,16 @@ class MainWindow(QMainWindow):
             updated = dialog.settings()
             if updated == self.cfg:
                 return
-            sections = ("asr", "translator") if key == "runtime" else (('asr',) if key == 'qwen' else (key,))
-            requires_check = any(updated[section].get(option) != self.cfg[section].get(option)
-                                 for section in sections for option in ("device", "compute_type", "use_bf16"))
+            previous = self.cfg
             self.cfg = updated
             try:
                 self.save_settings()
             except (OSError, ValueError, VoxlateError) as exc:
+                self.cfg = previous
                 QMessageBox.warning(self, "设置未保存", str(exc))
                 return
-            if requires_check:
-                self.inspect(keys={key, 'qwen'} if key == 'runtime' else {key}, size_keys=set())
-            else:
-                self.notify("设置已保存。")
+            self.refresh_resource_requirements()
+            self.notify("设置已保存，使用时检查。")
 
     def change_storage(self, value):
         try:
@@ -600,7 +597,7 @@ class MainWindow(QMainWindow):
             remember_root(self.config_path, resource_root(self.cfg))
             self.save_settings()
             self.refresh_settings_fields()
-            self.inspect()
+            self.restore_resources()
         except (OSError, ValueError, VoxlateError) as exc:
             QMessageBox.warning(self, "无法更换存放位置", str(exc))
 
@@ -1106,8 +1103,25 @@ class MainWindow(QMainWindow):
         self.sync_recognition_choice()
         title = '综合识别（turbo + v3）' if key == 'asr_combined' else ASR_MODELS[key]['title']
         self.notify("已选择 " + title + "；原模型的项目已保留，请点击「识别」。")
-        changed_device = any(old["asr"].get(k) != self.cfg["asr"].get(k) for k in ("device", "compute_type"))
-        self.inspect(keys=set(ASR_MODELS) | {'qwen'} | ({"runtime"} if changed_device else set()), size_keys=set())
+        self.refresh_resource_requirements()
+
+    def refresh_resource_requirements(self):
+        """Update selection and requirements without probing or walking resources."""
+        for resource in self.resources:
+            resource.required = resource_required(self.cfg, resource.key)
+            if resource.key in getattr(self, 'display_resources', {}):
+                self.display_resources[resource.key] = resource
+            node = getattr(self, 'resource_nodes', {}).get(resource.key)
+            if node is not None:
+                node.setText(2, ('已就绪' if resource.required else '已下载') if resource.ready
+                             else ('待准备' if resource.required else '可选'))
+                node.setForeground(2, QColor('#22805e' if resource.ready else '#b26113'))
+                node.setToolTip(2, resource.detail + '\n' + resource.instructions)
+        self.sync_recognition_choice()
+        try:
+            save_resource_cache(self.cfg, self.config_path, self.resources)
+        except OSError as exc:
+            self.install_logs.appendPlainText(f'检查结果未能保存：{exc}')
 
     def change_translation_model(self, key):
         if self.task or key == selected_key(self.cfg):
@@ -1123,7 +1137,7 @@ class MainWindow(QMainWindow):
             return
         self.notify("已选择 " + MODELS[key]["title"] + "；下次翻译将使用此模型。")
         self.refresh_export_state()
-        self.inspect(keys=set(MODELS) | {"llm_engine", "runtime"})
+        self.refresh_resource_requirements()
 
     def show_resource(self):
         resource = getattr(self, "display_resources", {}).get(self.selected_resource_key())
@@ -1802,23 +1816,11 @@ class MainWindow(QMainWindow):
             if combined != self.cfg['asr'].get('combined', False):
                 self.cfg['asr']['combined'] = combined
                 self.save_settings()
-                for resource in self.resources:
-                    if resource.key in ASR_MODELS:
-                        resource.required = required_model(self.cfg, resource.key)
-                    elif resource.key == 'qwen':
-                        resource.required = not combined and selected_asr_key(self.cfg) == 'asr_qwen_model'
                 self.set_resource_controls_enabled(self.task is None)
             if recognition in ASR_MODELS and recognition != selected_asr_key(self.cfg):
                 select_asr_model(self.cfg, recognition, resource_root(self.cfg))
                 self.save_settings()
-                for resource in self.resources:
-                    if resource.key in ASR_MODELS:
-                        resource.required = resource.key == recognition
-                    elif resource.key == 'qwen':
-                        resource.required = recognition == 'asr_qwen_model'
-                if self.resources:
-                    self.resources_checked(self.resources)
-            self.sync_recognition_choice()
+            self.refresh_resource_requirements()
             self.cfg["source_lang"] = language
             self.cfg['target_lang'] = target
             self.refresh_audio_tracks(project['input'], selected_track(project), fallback=False,
@@ -2117,7 +2119,9 @@ class MainWindow(QMainWindow):
         reference_id = self.reference_sentence.value() or None
         work = self.project_path.parent
         separation_keys = {'ffmpeg', 'ffprobe', 'separator', 'separator_model'}
-        recognition_keys = {'ffmpeg', 'ffprobe', 'runtime', 'qwen', *ASR_MODELS}
+        recognition_keys = {'ffmpeg', 'ffprobe',
+                            'qwen' if self.recognition_choice() == 'asr_qwen_model' else 'runtime',
+                            *(key for key in ASR_MODELS if required_model(cfg, key))}
         translation_keys = {'runtime', 'llm_engine', *MODELS}
         dubbing_keys = {'ffmpeg', 'ffprobe', 'tts', 'tts_model'}
         needed = {'separate': separation_keys, 'recognize': recognition_keys, 'translate': translation_keys,
@@ -2130,9 +2134,12 @@ class MainWindow(QMainWindow):
                            mode == 'roles' and not self.project.get('roles_initialized')):
                 needed |= dubbing_keys
 
+        cached_resources = copy.deepcopy(self.resources)
+
         def action(emit):
             emit("处理前检查资源…")
-            results = [] if stop_after == 'export' else check_resources(cfg, self.config_path, quick=True)
+            results = [] if stop_after == 'export' else check_resources(cfg, self.config_path,
+                keys=needed, cached=cached_resources, quick=True)
             missing = [r for r in results if not r.ready and r.required and (needed is None or r.key in needed)]
             if missing:
                 return {"resources": results}
@@ -2141,12 +2148,15 @@ class MainWindow(QMainWindow):
                 sentence_ids=sentence_ids, force_tts=force_tts, force_translation=force_translation,
                 force_recognition=force_recognition, recognition_only=stop_after == 'recognize',
                 translate_only=stop_after == 'translate', auto_export=stop_after == 'auto')
-            return {"path": str(result)}
+            return {"path": str(result), "checked_resources": results}
 
         def complete(result):
             if "resources" in result:
                 self.resources_checked(result["resources"])
                 return
+            if result.get('checked_resources'):
+                self.resources = result['checked_resources']
+                self.refresh_resource_requirements()
             self.load_project(self.project_path)
             self.set_status({'separate':'分离完成，可以识别人声。', 'recognize':'识别完成，可检查分句后翻译。', 'translate':'翻译完成，可修改译文后生成配音。', 'dub':'配音完成，可逐句试听后导出。', 'export':'视频已导出，可以打开播放。', 'auto':'视频已导出，可以打开播放。'}[stop_after])
             self.notify("完成：" + result["path"])
