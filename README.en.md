@@ -20,6 +20,8 @@ A local Windows tool for dubbing English or Japanese videos into Simplified Chin
 
 Translation must exist before dubbing. All selected lines need speech matching the current text and voice settings before export. Export processes existing audio without rerunning recognition, translation or voice cloning.
 
+Translation includes discarded sentences. Include/discard controls dubbing only; discarded intervals keep the original audio, with translated text available for review.
+
 If Qwen cannot align a chunk, other chunks continue. Its text and coarse chunk boundaries are retained, but dubbing is disabled to preserve the original audio. The log identifies sentences to review and repair with manual segmentation; alignment diagnostics stay in the project's `recognition/` folder.
 
 The blue **一键导出** (One-click export) resumes missing or outdated steps, preserving existing segmentation and valid translations and reusing matching speech. New projects run all five steps with saved checkpoints, so a translation failure does not require recognition again.

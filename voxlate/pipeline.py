@@ -434,7 +434,7 @@ class VideoDubPipeline:
         chosen = [s for s in active if self.sentence_ids is None or s['id'] in self.sentence_ids]
         if self.sentence_ids is not None and (not self.sentence_ids or {s['id'] for s in chosen} != self.sentence_ids):
             raise VoxlateError('所选句子不存在或未启用配音')
-        pending = [s for s in active if self.force_translation or not s.get("target_text", "").strip()
+        pending = [s for s in segments if self.force_translation or not s.get("target_text", "").strip()
                    or s.get("translation_key") != digest(s["source_text"], stamps["translator"])]
         if pending and self.require_translated:
             raise VoxlateError("译文需要更新，请先点击「翻译」，查看译文后再生成配音。")
@@ -483,8 +483,8 @@ class VideoDubPipeline:
         previous = read_json(project_path)
         config_key = digest(self.cfg['translator'])
         changed = self.project.get('translation_config_key') not in (None, config_key)
-        pending = [s for s in segments if s.get('enabled', True) and (
-            self.force_translation or changed or not s.get('target_text', '').strip())]
+        pending = [s for s in segments if
+            self.force_translation or changed or not s.get('target_text', '').strip()]
         if pending:
             LOG.info('翻译：%d 句', len(pending))
             stamp = digest(CACHE_VERSION, self.cfg['translator'], model_stamp(self.cfg['translator']['model_path']))
