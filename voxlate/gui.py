@@ -2087,8 +2087,8 @@ class MainWindow(QMainWindow):
         message = None
         if stop_after == 'recognize' and (segments or (self.project or {}).get('manual_edits')):
             message = '重新识别整个视频？\n手动分句、选弃和译文修改将被自动结果替换，需重新配音。\n原项目会自动备份。'
-        elif stop_after == 'translate' and any(s.get('target_text', '').strip() for s in active):
-            message = '已有译文，重新翻译？\n保留原文和分句；译文变化的句子需重新配音。\n原项目会自动备份。'
+        elif stop_after == 'translate' and any(s.get('target_text', '').strip() for s in segments):
+            message = '已有译文，重新翻译？\n包括已舍弃句子；保留原文、分句和选弃状态。\n已选句子译文变化后需重新配音，原项目会自动备份。'
         elif stop_after == 'dub' and sentence_ids is None and any(audio_exists(s.get('tts_audio')) for s in active):
             mode_name = {'uniform': '统一音色', 'individual': '逐句音色', 'roles': '分角色音色'}[self.selected_voice_mode()]
             message = f'已有{mode_name}配音，重新生成并覆盖？\n仅替换当前音色方案的已选句子，其他音色方案保留。'

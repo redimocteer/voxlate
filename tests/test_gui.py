@@ -1383,6 +1383,18 @@ class GuiTests(unittest.TestCase):
             question.assert_not_called()
             start.assert_called_once()
 
+    def test_retranslation_confirms_overwriting_discarded_text(self):
+        video = Path(self.directory.name)/'source.mp4'
+        video.write_bytes(b'video')
+        path = self.window.default_project_path(video)
+        write_json(path, dict(schema_version=1, name='voxlate', input=str(video), duration=2,
+            segments=[dict(id=1, start=0, end=1, source_text='Hello', target_text='你好', enabled=False)]))
+        self.window.load_project(path)
+        with patch.object(QMessageBox, 'question', return_value=QMessageBox.StandardButton.No) as question, patch.object(self.window, 'start_task') as start:
+            self.window.start_pipeline('translate')
+            self.assertIn('包括已舍弃句子', question.call_args.args[2])
+            start.assert_not_called()
+
     def test_clear_project_confirmation_and_reset_preserve_video_and_export(self):
         from voxlate.project_storage import project_root
         video = Path(self.directory.name)/'source.mp4'

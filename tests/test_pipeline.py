@@ -844,7 +844,7 @@ class PipelineIntegration(unittest.TestCase):
             self.run_pipeline()
         self.assertEqual(self.tts_ids, [])
 
-    def test_all_unchecked_skips_translation_and_tts_but_still_exports(self):
+    def test_all_unchecked_translates_but_skips_tts_and_exports_original(self):
         self.run_pipeline(stop_after="translate")
         path = self.work / "project.json"
         project = read_json(path)
@@ -855,9 +855,29 @@ class PipelineIntegration(unittest.TestCase):
         self.run_pipeline()
         self.assertTrue(self.output.is_file())
         self.assertEqual(self.calls["tts"], 0)
-        self.assertEqual(self.calls["translator"], 1)
+        self.assertEqual(self.calls["translator"], 2)
         project = read_json(path)
+        self.assertTrue(all(s['target_text'] and not s['enabled'] for s in project['segments']))
         self.assertTrue(all(s["aligned_audio"] == s["source_audio"] for s in project["segments"]))
+
+    def test_translation_and_one_click_include_discarded_sentences_without_dubbing_them(self):
+        self.run_pipeline(stop_after='recognize')
+        path = self.work/'project.json'
+        project = read_json(path)
+        project['segments'][0].update(enabled=False, timing_fallback=True)
+        write_json(path, project)
+        self.run_pipeline(stop_after='translate', translate_only=True)
+        translated = read_json(path)
+        self.assertEqual([s['target_text'] for s in translated['segments']], ['你好。', '欢迎。'])
+        self.assertFalse(translated['segments'][0]['enabled'])
+        translated['segments'][0]['target_text'] = ''
+        write_json(path, translated)
+        self.run_pipeline(auto_export=True)
+        result = read_json(path)
+        self.assertEqual(result['segments'][0]['target_text'], '你好。')
+        self.assertFalse(result['segments'][0]['enabled'])
+        self.assertEqual(self.tts_ids, [2])
+        self.assertEqual(result['segments'][0]['aligned_audio'], result['segments'][0]['source_audio'])
 
     def test_translate_only_and_input_protection(self):
         self.run_pipeline(stop_after="translate")
