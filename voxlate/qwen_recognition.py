@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 import re
 import unicodedata
+from types import SimpleNamespace
 from .common import VoxlateError, write_json
 from .media import check_cancelled
 from .model_lifecycle import model_event
@@ -104,16 +105,22 @@ def transcribe(audio, config, work_dir):
         source.seek(start)
         samples = source.read(stop-start, dtype='float32', always_2d=True).mean(axis=1)
         return librosa.resample(samples, orig_sr=source.samplerate, target_sr=16000) if source.samplerate != 16000 else samples
-    chunks = []
+    from .recognition_cache import QwenCheckpoint
+    with sf.SoundFile(str(audio)) as source:
+        rate, total = source.samplerate, source.frames
+    checkpoint = QwenCheckpoint(audio, config, directory, rate, total,
+                                lambda message: model_event(work_dir, message))
+    chunks = checkpoint.chunks
+    start = chunks[-1]['last_frame'] if chunks else 0
     model = None
     try:
-        model_event(work_dir, '正在加载识别模型（Qwen3-ASR 1.7B）')
-        model = Qwen3ASRModel.from_pretrained(str(Path(config['model_path']).resolve()),
-            dtype=dtype, device_map=device, attn_implementation='sdpa', local_files_only=True,
-            max_inference_batch_size=1, max_new_tokens=1024)
-        model_event(work_dir, '识别模型已加载（Qwen3-ASR 1.7B）')
+        if start < total:
+            model_event(work_dir, '正在加载识别模型（Qwen3-ASR 1.7B）')
+            model = Qwen3ASRModel.from_pretrained(str(Path(config['model_path']).resolve()),
+                dtype=dtype, device_map=device, attn_implementation='sdpa', local_files_only=True,
+                max_inference_batch_size=1, max_new_tokens=1024)
+            model_event(work_dir, '识别模型已加载（Qwen3-ASR 1.7B）')
         with sf.SoundFile(str(audio)) as source:
-            start, rate, total = 0, source.samplerate, source.frames
             while start < total:
                 check_cancelled()
                 stop = min(total, start+30*rate)
@@ -125,35 +132,55 @@ def transcribe(audio, config, work_dir):
                     if energy:
                         stop = start+20*rate+int(np.argmin(energy))*width+width//2
                 samples = read(source, start, stop)
+                progress(f'Qwen 识别第 {len(chunks)+1} 块：{start/rate:.1f}–{stop/rate:.1f} 秒')
                 text = model.transcribe(audio=(samples,16000), language=language)[0].text.strip()
                 chunks.append(dict(start=start/rate, end=stop/rate, first_frame=start, last_frame=stop, text=text))
-                write_json(directory/'qwen_transcript.json', chunks)
+                checkpoint.save()
                 progress(f'Qwen 识别：{stop/rate:.0f}/{total/rate:.0f} 秒（{stop*100/total:.0f}%）')
                 start = stop
     finally:
-        del model
-        release()
-        model_event(work_dir, '已释放识别模型（Qwen3-ASR 1.7B）')
-    rows, alignments = [], []
+        if model is not None:
+            del model
+            release()
+            model_event(work_dir, '已释放识别模型（Qwen3-ASR 1.7B）')
+    rows = []
+    alignments = checkpoint.alignments
+    for index, aligned in enumerate(alignments):
+        chunk = aligned['chunk']
+        try:
+            if chunk['text']:
+                rows.extend(aligned_segments(chunk['text'], [SimpleNamespace(**w) for w in aligned['words']],
+                    chunk['start'], chunk['end']-chunk['start'], config.get('language', 'en')))
+        except (VoxlateError, TypeError, AttributeError):
+            del alignments[index:]
+            model_event(work_dir, 'Qwen 对齐缓存校验失败，从该块重新对齐。')
+            break
+    if alignments:
+        model_event(work_dir, f'Qwen 续对齐：复用 {len(alignments)}/{len(chunks)} 块。')
+    completed = len(alignments)
     model = None
     try:
-        model_event(work_dir, '正在加载时间对齐模型（Qwen3-ForcedAligner 0.6B）')
-        model = Qwen3ForcedAligner.from_pretrained(str(Path(config['model_path'])/'aligner'),
-            dtype=dtype, device_map=device, attn_implementation='sdpa', local_files_only=True)
+        if any(chunk['text'] for chunk in chunks[completed:]):
+            model_event(work_dir, '正在加载时间对齐模型（Qwen3-ForcedAligner 0.6B）')
+            model = Qwen3ForcedAligner.from_pretrained(str(Path(config['model_path'])/'aligner'),
+                dtype=dtype, device_map=device, attn_implementation='sdpa', local_files_only=True)
         with sf.SoundFile(str(audio)) as source:
-            for index, chunk in enumerate(chunks):
+            for index in range(completed, len(chunks)):
                 check_cancelled()
+                chunk = chunks[index]
+                words = []
                 if chunk['text']:
                     samples = read(source, chunk['first_frame'], chunk['last_frame'])
                     words = model.align(audio=(samples,16000), text=chunk['text'], language=language)[0].items
-                    alignments.append(dict(chunk=chunk, words=[vars(word) for word in words]))
-                    write_json(directory/'qwen_alignment.json', alignments)
                     rows.extend(aligned_segments(chunk['text'], words, chunk['start'],chunk['end']-chunk['start'],config.get('language','en')))
+                alignments.append(dict(chunk=chunk, words=[vars(word) for word in words]))
+                checkpoint.save()
                 progress(f'Qwen 时间对齐：{index+1}/{len(chunks)}（{(index+1)*100/len(chunks):.0f}%）')
     finally:
-        del model
-        release()
-        model_event(work_dir, '已释放时间对齐模型（Qwen3-ForcedAligner 0.6B）')
+        if model is not None:
+            del model
+            release()
+            model_event(work_dir, '已释放时间对齐模型（Qwen3-ForcedAligner 0.6B）')
     for number, row in enumerate(rows,1): row['id']=number
     uncertain = [row['id'] for row in rows if row.get('timing_uncertain')]
     if uncertain:

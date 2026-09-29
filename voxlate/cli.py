@@ -32,7 +32,7 @@ def main(argv=None):
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--speaker-ref", type=Path, help="5–15 秒干净的人物参考音频；省略则从分离人声选取")
     stages = parser.add_mutually_exclusive_group()
-    stages.add_argument("--stop-after", choices=["recognize", "translate", "dub"], help="完成识别、翻译或配音后暂停")
+    stages.add_argument("--stop-after", choices=["separate", "recognize", "translate", "dub"], help="完成分离、识别、翻译或配音后暂停")
     stages.add_argument('--translate-only', action='store_true', help='仅翻译已识别的对白')
     stages.add_argument('--auto-export', action='store_true', help='接续已有结果，一键导出')
     stages.add_argument('--export-only', action='store_true', help='只使用已生成的配音导出视频')

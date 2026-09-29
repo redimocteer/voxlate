@@ -193,6 +193,36 @@ class Invariants(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg unavailable")
 class PipelineIntegration(unittest.TestCase):
+    def test_separation_and_recognition_are_independent_and_reusable(self):
+        model_path = self.cfg['asr']['model_path']
+        self.cfg['asr']['model_path'] = str(self.root/'absent-asr')
+        self.run_pipeline(stop_after='separate')
+        self.assertEqual(self.calls, Counter(separator=1))
+        project = read_json(self.work/'project.json')
+        self.assertEqual(project['segments'], [])
+        self.assertIn('prepared_audio_key', project)
+        self.run_pipeline(stop_after='separate')
+        self.assertEqual(self.calls, Counter(separator=1))
+        self.cfg['asr']['model_path'] = model_path
+        # Removing separator weights after preparation must not prevent ASR.
+        marker = Path(self.cfg['separator']['model_path'])/'model.bin'
+        if marker.exists():
+            marker.unlink()
+        self.run_pipeline(stop_after='recognize', recognition_only=True, force_recognition=True)
+        self.assertEqual(self.calls, Counter(separator=1, asr=1))
+        self.assertTrue(read_json(self.work/'project.json')['segments'])
+        before = (self.work/'project.json').read_bytes()
+        self.cfg['separator']['shifts'] += 1
+        with self.assertRaisesRegex(VoxlateError, '请先点击'):
+            self.run_pipeline(stop_after='recognize', recognition_only=True, force_recognition=True)
+        self.assertEqual((self.work/'project.json').read_bytes(), before)
+
+    def test_recognition_alone_never_silently_separates(self):
+        with self.assertRaisesRegex(VoxlateError, '请先点击'):
+            self.run_pipeline(stop_after='recognize', recognition_only=True)
+        self.assertEqual(self.calls, Counter())
+        self.assertFalse((self.work/'original.wav').exists())
+
     def test_selected_audio_track_is_extracted_isolated_and_retained_in_export(self):
         from voxlate.audio_tracks import read_audio_tracks
         from voxlate.project_storage import default_project_directory

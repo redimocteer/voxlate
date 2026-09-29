@@ -475,16 +475,19 @@ class MainWindow(QMainWindow):
         self.table.verticalHeader().setDefaultSectionSize(36)
         layout.addWidget(self.table, 1)
         actions = QHBoxLayout()
-        self.recognize_button = self.button("① 识别", lambda: self.start_pipeline("recognize"))
-        self.recognize_button.setToolTip('重新自动分句，会替换手动分句和译文，需重新配音。')
+        self.separate_button = self.button('① 分离', lambda: self.start_pipeline('separate'))
+        self.separate_button.setToolTip('提取所选音轨，分离人声与背景；已有匹配结果时直接复用。')
+        actions.addWidget(self.separate_button)
+        self.recognize_button = self.button("② 识别", lambda: self.start_pipeline("recognize"))
+        self.recognize_button.setToolTip('识别已分离的人声；Qwen 自动续跑。应用自动分句会替换手动分句和译文，需重新配音。')
         actions.addWidget(self.recognize_button)
-        self.translate_button = self.button("② 翻译", lambda: self.start_pipeline('translate'))
+        self.translate_button = self.button("③ 翻译", lambda: self.start_pipeline('translate'))
         self.translate_button.setEnabled(False)
         actions.addWidget(self.translate_button)
-        self.dub_button = self.button("③ 生成配音", lambda: self.start_pipeline('dub'))
+        self.dub_button = self.button("④ 生成配音", lambda: self.start_pipeline('dub'))
         self.dub_button.setEnabled(False)
         actions.addWidget(self.dub_button)
-        self.export_button = self.button("④ 导出视频", lambda: self.start_pipeline('export'))
+        self.export_button = self.button("⑤ 导出视频", lambda: self.start_pipeline('export'))
         self.export_button.setEnabled(False)
         actions.addWidget(self.export_button)
         self.one_click_button = self.button('一键导出', lambda: self.start_pipeline('auto'), primary=True)
@@ -2113,10 +2116,11 @@ class MainWindow(QMainWindow):
         mode = self.selected_voice_mode()
         reference_id = self.reference_sentence.value() or None
         work = self.project_path.parent
-        recognition_keys = {'ffmpeg', 'ffprobe', 'runtime', 'qwen', 'separator', 'separator_model', *ASR_MODELS}
+        separation_keys = {'ffmpeg', 'ffprobe', 'separator', 'separator_model'}
+        recognition_keys = {'ffmpeg', 'ffprobe', 'runtime', 'qwen', *ASR_MODELS}
         translation_keys = {'runtime', 'llm_engine', *MODELS}
         dubbing_keys = {'ffmpeg', 'ffprobe', 'tts', 'tts_model'}
-        needed = {'recognize': recognition_keys, 'translate': translation_keys,
+        needed = {'separate': separation_keys, 'recognize': recognition_keys, 'translate': translation_keys,
                   'dub': dubbing_keys, 'export': set()}.get(stop_after)
         if stop_after == 'auto' and segments:
             needed = {'ffmpeg', 'ffprobe'}
@@ -2135,7 +2139,8 @@ class MainWindow(QMainWindow):
             result = VideoDubPipeline(cfg, tts_session=self.tts_session).process(video, output, work, None, None if stop_after in ('export', 'auto') else stop_after,
                 require_translated=stop_after == 'dub', auto_reference=True, voice_mode=mode, reference_sentence_id=reference_id, export_only=stop_after == 'export',
                 sentence_ids=sentence_ids, force_tts=force_tts, force_translation=force_translation,
-                force_recognition=force_recognition, translate_only=stop_after == 'translate', auto_export=stop_after == 'auto')
+                force_recognition=force_recognition, recognition_only=stop_after == 'recognize',
+                translate_only=stop_after == 'translate', auto_export=stop_after == 'auto')
             return {"path": str(result)}
 
         def complete(result):
@@ -2143,7 +2148,7 @@ class MainWindow(QMainWindow):
                 self.resources_checked(result["resources"])
                 return
             self.load_project(self.project_path)
-            self.set_status({'recognize':'识别完成，可检查分句后翻译。', 'translate':'翻译完成，可修改译文后生成配音。', 'dub':'配音完成，可逐句试听后导出。', 'export':'视频已导出，可以打开播放。', 'auto':'视频已导出，可以打开播放。'}[stop_after])
+            self.set_status({'separate':'分离完成，可以识别人声。', 'recognize':'识别完成，可检查分句后翻译。', 'translate':'翻译完成，可修改译文后生成配音。', 'dub':'配音完成，可逐句试听后导出。', 'export':'视频已导出，可以打开播放。', 'auto':'视频已导出，可以打开播放。'}[stop_after])
             self.notify("完成：" + result["path"])
             if stop_after == 'translate' and self.role_voice.isChecked() and not self.project.get('roles_initialized'):
                 def group_when_idle():
