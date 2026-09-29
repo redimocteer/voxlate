@@ -3,11 +3,38 @@ import gc
 import math
 from pathlib import Path
 import re
+import time
 import unicodedata
 from types import SimpleNamespace
 from .common import VoxlateError, write_json
 from .media import check_cancelled
 from .model_lifecycle import model_event
+
+
+def next_chunk_end(source, start, maximum=12):
+    """Keep contiguous short inputs, preferring a quiet 200 ms window near the end."""
+    import numpy as np
+    rate, total = source.samplerate, source.frames
+    stop = min(total, start+maximum*rate)
+    if stop < total:
+        minimum = maximum*2//3
+        source.seek(start+minimum*rate)
+        tail = source.read(stop-start-minimum*rate, dtype='float32', always_2d=True).mean(axis=1)
+        width = max(1, round(rate*.2))
+        energy = [float(np.mean(tail[i:i+width]**2)) for i in range(0,len(tail)-width+1,width)]
+        if energy:
+            stop = start+minimum*rate+int(np.argmin(energy))*width+width//2
+    return stop
+
+
+def recognize_chunk(model, samples, language, timeout):
+    """Never commit text cut off by Transformers' soft generation time limit."""
+    began = time.monotonic()
+    text = model.transcribe(audio=(samples, 16000), language=language)[0].text.strip()
+    elapsed = time.monotonic()-began
+    if elapsed >= timeout:
+        raise TimeoutError('Qwen generation exceeded its time limit')
+    return text, elapsed
 
 
 def normalized(text):
@@ -97,7 +124,6 @@ def alignment_rows(aligned, language):
 
 
 def transcribe(audio, config, work_dir):
-    import numpy as np
     import soundfile as sf
     import librosa
     import torch
@@ -134,24 +160,30 @@ def transcribe(audio, config, work_dir):
             model = Qwen3ASRModel.from_pretrained(str(Path(config['model_path']).resolve()),
                 dtype=dtype, device_map=device, attn_implementation='sdpa', local_files_only=True,
                 max_inference_batch_size=1, max_new_tokens=1024)
+            timeout = 15 if device.startswith('cuda') else 90
+            model.model.thinker.generation_config.max_time = timeout
+            release()
             model_event(work_dir, '识别模型已加载（Qwen3-ASR 1.7B）')
         with sf.SoundFile(str(audio)) as source:
             while start < total:
                 check_cancelled()
-                stop = min(total, start+30*rate)
-                if stop < total:
-                    source.seek(start+20*rate)
-                    tail = source.read(stop-start-20*rate, dtype='float32', always_2d=True).mean(axis=1)
-                    width = max(1, round(rate*.2))
-                    energy = [float(np.mean(tail[i:i+width]**2)) for i in range(0,len(tail)-width+1,width)]
-                    if energy:
-                        stop = start+20*rate+int(np.argmin(energy))*width+width//2
-                samples = read(source, start, stop)
-                progress(f'Qwen 识别第 {len(chunks)+1} 块：{start/rate:.1f}–{stop/rate:.1f} 秒')
-                text = model.transcribe(audio=(samples,16000), language=language)[0].text.strip()
+                for maximum in (30, 12, 6, 3):
+                    check_cancelled()
+                    stop = next_chunk_end(source, start, maximum)
+                    samples = read(source, start, stop)
+                    progress(f'Qwen 识别第 {len(chunks)+1} 块：{start/rate:.1f}–{stop/rate:.1f} 秒')
+                    try:
+                        text, elapsed = recognize_chunk(model, samples, language, timeout)
+                        break
+                    except TimeoutError:
+                        if maximum == 3:
+                            raise VoxlateError(f'Qwen 在 {start/rate:.1f} 秒附近仍识别缓慢，已停止；此前进度保留，可续跑或切换识别模型。') from None
+                        progress('Qwen 本块识别超时，缩短范围重试；不保存未完成文字。')
+                    finally:
+                        release()
                 chunks.append(dict(start=start/rate, end=stop/rate, first_frame=start, last_frame=stop, text=text))
                 checkpoint.save()
-                progress(f'Qwen 识别：{stop/rate:.0f}/{total/rate:.0f} 秒（{stop*100/total:.0f}%）')
+                progress(f'Qwen 识别：{stop/rate:.0f}/{total/rate:.0f} 秒（{stop*100/total:.0f}%）· 本块 {elapsed:.1f} 秒')
                 start = stop
     finally:
         if model is not None:
@@ -176,6 +208,7 @@ def transcribe(audio, config, work_dir):
             model_event(work_dir, '正在加载时间对齐模型（Qwen3-ForcedAligner 0.6B）')
             model = Qwen3ForcedAligner.from_pretrained(str(Path(config['model_path'])/'aligner'),
                 dtype=dtype, device_map=device, attn_implementation='sdpa', local_files_only=True)
+            release()
         with sf.SoundFile(str(audio)) as source:
             for index in range(completed, len(chunks)):
                 check_cancelled()
@@ -197,6 +230,7 @@ def transcribe(audio, config, work_dir):
                 rows.extend(chunk_rows)
                 alignments.append(aligned)
                 checkpoint.save()
+                release()
                 progress(f'Qwen 时间对齐：{index+1}/{len(chunks)}（{(index+1)*100/len(chunks):.0f}%）')
     finally:
         if model is not None:
