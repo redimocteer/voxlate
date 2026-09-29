@@ -94,6 +94,40 @@ class QwenResumeTests(unittest.TestCase):
         self.run_asr()
         self.assertEqual(self.asr.transcribe.call_count, 2)
 
+    def test_untimed_block_keeps_text_and_original_audio_without_stopping_later_blocks(self):
+        untimed = [NS(items=[NS(text='Hello', start_time=0, end_time=0)])]
+        self.aligner.align.side_effect = [untimed, self.aligner.align.return_value]
+        rows = self.run_asr()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]['source_text'], 'Hello.')
+        self.assertFalse(rows[0]['enabled'])
+        self.assertTrue(rows[0]['timing_fallback'])
+        self.assertEqual(rows[0]['start'], 0)
+        self.assertEqual(rows[0]['end'], rows[1]['start'])
+        self.assertEqual(rows[0]['words'], [])
+        self.assertFalse(rows[1].get('timing_uncertain'))
+        issue = read_json(self.root/'recognition/qwen_alignment_issue_0001.json')
+        self.assertEqual(issue['words'][0]['end_time'], 0)
+        self.asr_factory.reset_mock()
+        self.align_factory.reset_mock()
+        self.assertEqual(self.run_asr(), rows)
+        self.asr_factory.assert_not_called()
+        self.align_factory.assert_not_called()
+
+    def test_out_of_range_alignment_fallback_survives_interruption_and_resume(self):
+        self.aligner.align.side_effect = [
+            [NS(items=[NS(text='Hello', start_time=0, end_time=999)])], RuntimeError('interrupted')]
+        with self.assertRaisesRegex(RuntimeError, 'interrupted'):
+            self.run_asr()
+        self.asr_factory.reset_mock()
+        self.aligner.align.reset_mock(side_effect=True)
+        rows = self.run_asr()
+        self.asr_factory.assert_not_called()
+        self.assertEqual(self.aligner.align.call_count, 1)
+        self.assertFalse(rows[0]['enabled'])
+        self.assertTrue(rows[0]['timing_fallback'])
+        self.assertTrue(rows[1].get('enabled', True))
+
     def test_cache_rejects_changed_audio_language_model_and_partial_commit(self):
         self.run_asr()
         directory = self.root/'recognition'

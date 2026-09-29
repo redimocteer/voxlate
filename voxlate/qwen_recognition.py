@@ -81,6 +81,21 @@ def aligned_segments(text, words, offset, duration, language):
     return result
 
 
+def alignment_rows(aligned, language):
+    chunk = aligned['chunk']
+    if not chunk['text']:
+        return []
+    if aligned.get('timing_fallback'):
+        # Only the input chunk's bounds are known. Retain its text for manual
+        # repair, but never replace original speech using guessed word times.
+        return [dict(start=chunk['start'], end=chunk['end'], speaker='A',
+            source_lang=language, target_lang='zh', source_text=chunk['text'],
+            target_text='', words=[], enabled=False, timing_uncertain=True,
+            timing_fallback=True)]
+    return aligned_segments(chunk['text'], [SimpleNamespace(**w) for w in aligned['words']],
+        chunk['start'], chunk['end']-chunk['start'], language)
+
+
 def transcribe(audio, config, work_dir):
     import numpy as np
     import soundfile as sf
@@ -146,11 +161,8 @@ def transcribe(audio, config, work_dir):
     rows = []
     alignments = checkpoint.alignments
     for index, aligned in enumerate(alignments):
-        chunk = aligned['chunk']
         try:
-            if chunk['text']:
-                rows.extend(aligned_segments(chunk['text'], [SimpleNamespace(**w) for w in aligned['words']],
-                    chunk['start'], chunk['end']-chunk['start'], config.get('language', 'en')))
+            rows.extend(alignment_rows(aligned, config.get('language', 'en')))
         except (VoxlateError, TypeError, AttributeError):
             del alignments[index:]
             model_event(work_dir, 'Qwen 对齐缓存校验失败，从该块重新对齐。')
@@ -172,8 +184,18 @@ def transcribe(audio, config, work_dir):
                 if chunk['text']:
                     samples = read(source, chunk['first_frame'], chunk['last_frame'])
                     words = model.align(audio=(samples,16000), text=chunk['text'], language=language)[0].items
-                    rows.extend(aligned_segments(chunk['text'], words, chunk['start'],chunk['end']-chunk['start'],config.get('language','en')))
-                alignments.append(dict(chunk=chunk, words=[vars(word) for word in words]))
+                aligned = dict(chunk=chunk, words=[vars(word) for word in words])
+                try:
+                    chunk_rows = alignment_rows(aligned, config.get('language', 'en'))
+                except VoxlateError as exc:
+                    write_json(directory/f'qwen_alignment_issue_{index+1:04d}.json',
+                        dict(aligned, error=str(exc)))
+                    aligned = dict(chunk=chunk, words=[], timing_fallback=True)
+                    chunk_rows = alignment_rows(aligned, config.get('language', 'en'))
+                    model_event(work_dir, f"Qwen 第 {index+1} 块（{chunk['start']:.1f}–{chunk['end']:.1f} 秒）"
+                        '无法精确对齐：保留文字和原声，暂不配音，可手动分句修正。')
+                rows.extend(chunk_rows)
+                alignments.append(aligned)
                 checkpoint.save()
                 progress(f'Qwen 时间对齐：{index+1}/{len(chunks)}（{(index+1)*100/len(chunks):.0f}%）')
     finally:
@@ -182,7 +204,11 @@ def transcribe(audio, config, work_dir):
             release()
             model_event(work_dir, '已释放时间对齐模型（Qwen3-ForcedAligner 0.6B）')
     for number, row in enumerate(rows,1): row['id']=number
-    uncertain = [row['id'] for row in rows if row.get('timing_uncertain')]
+    fallback = [row['id'] for row in rows if row.get('timing_fallback')]
+    if fallback:
+        model_event(work_dir, 'Qwen 第 '+ '、'.join(map(str, fallback))+
+            ' 句仅保留音频块范围，已舍弃配音并保留原声；请试听后手动分句修正。')
+    uncertain = [row['id'] for row in rows if row.get('timing_uncertain') and not row.get('timing_fallback')]
     if uncertain:
         model_event(work_dir, 'Qwen 对齐不确定，请试听第 '+ '、'.join(map(str, uncertain))+' 句。')
     return rows
