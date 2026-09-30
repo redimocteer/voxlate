@@ -1,7 +1,7 @@
 """Time-column range gestures and compact, discoverable header help."""
 from PySide6.QtCore import Qt, Signal, QTimer, QRectF, QEvent, QSize
-from PySide6.QtGui import QColor, QPen, QKeySequence
-from PySide6.QtWidgets import QApplication, QTableWidget, QTableWidgetSelectionRange, QHeaderView, QToolTip, QStyleOptionHeader, QStyle
+from PySide6.QtGui import QColor, QPen, QKeySequence, QBrush, QPalette
+from PySide6.QtWidgets import QApplication, QTableWidget, QTableWidgetSelectionRange, QHeaderView, QToolTip, QStyleOptionHeader, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleFactory
 
 
 HEADER_HELP = {
@@ -73,12 +73,43 @@ class InfoHeader(QHeaderView):
         return super().viewportEvent(event)
 
 
+class TimeProgressDelegate(QStyledItemDelegate):
+    def __init__(self, table):
+        super().__init__(table)
+        self.table = table
+        self.item_style = QStyleFactory.create('Fusion')
+        self.item_style.setParent(self)
+
+    def paint(self, painter, option, index):
+        if index.row() != self.table.playback_row:
+            return super().paint(painter, option, index)
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.widget = None
+        selected = bool(opt.state & QStyle.StateFlag.State_Selected)
+        painter.save()
+        painter.fillRect(opt.rect, opt.palette.highlight() if selected else QBrush(QColor('white')))
+        remaining = QRectF(opt.rect)
+        remaining.setLeft(remaining.left()+remaining.width()*self.table.playback_progress)
+        painter.fillRect(remaining, QColor('#afcff5' if selected else '#d4e7ff'))
+        opt.backgroundBrush = QBrush(Qt.BrushStyle.NoBrush)
+        opt.features &= ~QStyleOptionViewItem.ViewItemFeature.Alternate
+        if selected:
+            opt.palette.setColor(QPalette.ColorRole.Text, opt.palette.highlightedText().color())
+        opt.state &= ~(QStyle.StateFlag.State_Selected | QStyle.StateFlag.State_MouseOver | QStyle.StateFlag.State_HasFocus)
+        self.item_style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter)
+        painter.restore()
+
+
 class SentenceTable(QTableWidget):
     timeRangeSelected = Signal(int, int)
 
     def __init__(self, rows, columns):
         super().__init__(rows, columns)
         self.setHorizontalHeader(InfoHeader(self))
+        self.playback_row = None
+        self.playback_progress = 0.
+        self.setItemDelegateForColumn(0, TimeProgressDelegate(self))
         self.time_anchor = None
         self.time_last = None
         self.selecting_text = False
@@ -88,6 +119,15 @@ class SentenceTable(QTableWidget):
         self.verticalScrollBar().valueChanged.connect(self.position_range_button)
         self.horizontalScrollBar().valueChanged.connect(self.position_range_button)
         self.horizontalHeader().sectionResized.connect(self.position_range_button)
+
+    def set_playback_progress(self, row=None, progress=0.):
+        previous = self.playback_row
+        self.playback_row = row if row is not None and 0 <= row < self.rowCount() else None
+        self.playback_progress = max(0., min(1., progress))
+        for changed in {previous, self.playback_row} - {None}:
+            item = self.item(changed, 0)
+            if item is not None:
+                self.viewport().update(self.visualItemRect(item))
 
     def set_range_button(self, button):
         self.range_button = button
