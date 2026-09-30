@@ -1002,6 +1002,37 @@ class GuiTests(unittest.TestCase):
             self.assertFalse(self.window.confirm_discard())
         self.assertEqual(read_json(path)["segments"][0]["target_text"], "其他窗口修改")
 
+    def test_close_with_invalid_path_keeps_recovery_and_does_not_block(self):
+        from PySide6.QtGui import QCloseEvent
+        path = Path(self.directory.name)/'moved'/'synthetic.AVI.voxlate'/'en-combined'/'project.json'
+        project = dict(schema_version=1, name='voxlate', input=str(Path(self.directory.name)/'synthetic.AVI'),
+            duration=2, segments=[dict(id=1, start=0, end=1, source_text='Hello', target_text='你好')])
+        write_json(path, project)
+        self.window.project = project
+        self.window.project_path = path
+        self.window.project_hash = digest(project)
+        self.window.table.setRowCount(1)
+        from PySide6.QtWidgets import QTableWidgetItem
+        self.window.table.blockSignals(True)
+        self.window.table.setItem(0, 0, QTableWidgetItem('time'))
+        self.window.table.item(0, 0).setData(Qt.ItemDataRole.UserRole, False)
+        self.window.table.setItem(0, 2, QTableWidgetItem('未保存的修改'))
+        self.window.table.blockSignals(False)
+        self.window.dirty = True
+        before = path.read_bytes()
+        with patch.object(QMessageBox, 'warning') as warning, patch.object(self.window.tts_session, 'close') as close:
+            event = QCloseEvent()
+            self.window.closeEvent(event)
+            self.assertTrue(event.isAccepted())
+            warning.assert_not_called()
+            close.assert_called_once_with('关闭程序')
+        self.assertEqual(path.read_bytes(), before)
+        recovery = list((path.parent/'.temp').glob('unsaved-edits-*.json'))
+        self.assertEqual(len(recovery), 1)
+        segment = read_json(recovery[0])['segments'][0]
+        self.assertEqual(segment['target_text'], '未保存的修改')
+        self.assertFalse(segment['enabled'])
+
     def test_install_button_runs_missing_stages_and_rechecks(self):
         missing = [ResourceStatus("asr_turbo_model", "英文识别模型", False, "missing", "重新检查")]
         ready = [ResourceStatus("asr_turbo_model", "英文识别模型", True, "ready", "重新检查")]
