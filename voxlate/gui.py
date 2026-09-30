@@ -2043,8 +2043,11 @@ class MainWindow(QMainWindow):
                     item.setToolTip(("此句当前选取，点击舍弃" if enabled else "此句当前舍弃，点击选取") if column == 1 else "")
                     if column == 0 and segment:
                         item.setToolTip(f"{self.precise_timestamp(segment['start'])} – {self.precise_timestamp(segment['end'])}")
-                        if segment.get('timing_fallback'):
-                            item.setToolTip(item.toolTip() + '\n此段未能精确对齐，仅显示音频块范围；请试听后手动分句修正。')
+                        if segment.get('recognition_warning'):
+                            choice = '已手动选取配音。' if enabled else '自动保留原声，不参与配音。'
+                            item.setToolTip(item.toolTip() + '\n' + segment['recognition_warning'] + '；' + choice)
+                        elif segment.get('timing_fallback'):
+                            item.setToolTip(item.toolTip() + '\n此段未能精确对齐，仅显示音频块范围；默认保留原声。')
                         elif segment.get('timing_uncertain'):
                             item.setToolTip(item.toolTip() + '\n此句对齐不确定，建议试听原声。')
                     if column == 2:

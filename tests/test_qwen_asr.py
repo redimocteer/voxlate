@@ -4,7 +4,7 @@ import unittest
 from test_pipeline import TestDirectory
 from voxlate.app_settings import prepare_settings
 from voxlate.common import load_config, VoxlateError
-from voxlate.qwen_recognition import aligned_segments, recognize_chunk, next_chunk_end
+from voxlate.qwen_recognition import aligned_segments, recognize_chunk, next_chunk_end, protect_uncertain_rows
 from unittest.mock import Mock, patch
 from voxlate.recognition_models import select_model, required_model
 from voxlate.installer import resource_root, planned_stages
@@ -14,6 +14,34 @@ from voxlate.runtime import worker_command
 
 
 class QwenTests(unittest.TestCase):
+    def test_sparse_zero_timings_preserve_original_instead_of_fake_span(self):
+        words = [Word(text='Come', start_time=0, end_time=0), Word(text='back', start_time=12, end_time=12)]
+        rows = aligned_segments('Come back!', words, 50, 15, 'en')
+        protect_uncertain_rows(rows)
+        self.assertFalse(rows[0]['enabled'])
+        self.assertTrue(rows[0]['auto_preserve_original'])
+        self.assertEqual(rows[0]['source_text'], 'Come back!')
+        self.assertEqual(rows[0]['words'][1]['start'], 62)
+
+    def test_conservative_policy_rejects_stretched_words_and_heavy_zero_timings(self):
+        for text, words, duration in [
+                ('Hey!', [Word(text='Hey', start_time=0, end_time=18)], 20),
+                ('One two three four.', [Word(text=t,start_time=i*.2,end_time=i*.2+(0 if i<3 else .2))
+                    for i,t in enumerate(('One','two','three','four'))], 2)]:
+            with self.subTest(text=text):
+                row = protect_uncertain_rows(aligned_segments(text, words, 0, duration, 'en'))[0]
+                self.assertFalse(row['enabled'])
+                self.assertTrue(row['recognition_warning'])
+
+    def test_isolated_zero_word_and_normal_multilingual_speech_stay_available(self):
+        for text, words, language in [
+                ('Come back.', [Word(text='Come',start_time=0,end_time=0),Word(text='back',start_time=.05,end_time=.4)],'en'),
+                ('你好。', [Word(text='你',start_time=0,end_time=.2),Word(text='好',start_time=.2,end_time=.5)],'zh'),
+                ('はい。', [Word(text='はい',start_time=0,end_time=.5)],'ja')]:
+            row = protect_uncertain_rows(aligned_segments(text,words,0,1,language))[0]
+            self.assertTrue(row.get('enabled',True))
+            self.assertNotIn('auto_preserve_original',row)
+
     def test_time_limited_result_is_never_accepted_as_complete(self):
         model = Mock()
         model.transcribe.return_value = [Word(text='Incomplete text')]

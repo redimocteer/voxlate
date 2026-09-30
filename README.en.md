@@ -22,7 +22,7 @@ Translation must exist before dubbing. All selected lines need speech matching t
 
 Translation includes discarded sentences. Include/discard controls dubbing only; discarded intervals keep the original audio, with translated text available for review.
 
-If Qwen cannot align a chunk, other chunks continue. Its text and coarse chunk boundaries are retained, but dubbing is disabled to preserve the original audio. The log identifies sentences to review and repair with manual segmentation; alignment diagnostics stay in the project's `recognition/` folder.
+Qwen conservatively preserves original audio for failed or uncertain alignment, many zero-duration words, or an unusually stretched word. Candidate text remains visible, but these lines are excluded from dubbing automatically. Some real dialogue may consequently remain undubbed. These timing checks are not model confidence and cannot detect every hallucination. The same checks apply to existing caches on the next recognition run; no cache deletion is needed. Alignment diagnostics stay in the project's `recognition/` folder.
 
 Automatic Qwen recognition retains normal 20–30 second inputs, retrying slow generation with roughly 8–12 second chunks and smaller ranges if needed, preferring low-energy cut points. The model stays loaded while unused GPU cache is released between chunks. Timed-out text is never saved; repeated failure stops with prior progress intact. Completed legacy chunks remain reusable. Review boundaries, omissions, repetitions and background-music hallucinations; low energy does not guarantee a speech boundary.
 
