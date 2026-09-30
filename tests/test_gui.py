@@ -405,6 +405,24 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.window.tabs.tabText(1), "资源配置")
         self.assertFalse(hasattr(self.window, "resource_boxes"))
 
+    def test_full_segmentation_available_after_separation_without_recognition(self):
+        window=self.window
+        window.project=dict(duration=90,segments=[])
+        window.refresh_export_state()
+        self.assertFalse(window.full_segmentation_button.isEnabled())
+        window.project['prepared_audio_key']='synthetic-prepared-audio'
+        window.refresh_export_state()
+        self.assertTrue(window.full_segmentation_button.isEnabled())
+        self.assertIn('手动微调',window.manual_segmentation_button.text())
+        with patch.object(window,'edit_segmentation') as edit:
+            window.full_segmentation_button.click()
+            edit.assert_called_once_with(0,-1,full=True)
+        window.task=Mock()
+        window.refresh_export_state()
+        self.assertFalse(window.full_segmentation_button.isEnabled())
+        window.task=None
+        window.project=None
+
     def test_four_recognition_radios_are_exclusive_and_combined_requires_both_models(self):
         results = check_resources(self.window.cfg, self.window.config_path, quick=True)
         self.window.resources_checked(results)

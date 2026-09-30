@@ -151,6 +151,50 @@ class CommitTests(unittest.TestCase):
         f.run_pipeline(export_only=True,voice_mode='uniform',reference_sentence_id=3)
         self.assertTrue(f.output.is_file())
 
+    def test_full_manual_after_separation_and_replacing_existing_rows(self):
+        from voxlate.paired_segments import PairedSegmentPlan
+        for empty in (False,True):
+            project=copy.deepcopy(self.project)
+            if empty:
+                project['segments']=[]
+                project.pop('roles',None)
+                project.pop('reference_sentence_id',None)
+            write_json(self.path,project)
+            plan=PairedSegmentPlan(project,0,len(project['segments'])-1,full=True)
+            self.assertFalse(plan.pairs)
+            plan.add_sentence(.2,.7)
+            plan.add_sentence(1.6,2.2)
+            draft=self.path.parent/'.temp'/'segmentation-full-draft.json'
+            write_json(draft,dict(blocks=plan.blocks))
+            result=apply_segmentation(self.path,digest(project),self.integration.cfg,plan.blocks,runner=self.runner,full=True)
+            current=read_json(self.path)
+            self.assertEqual([(s['start'],s['end']) for s in current['segments']],[(.2,.7),(1.6,2.2)])
+            self.assertEqual([s['id'] for s in current['segments']],[1,2])
+            self.assertEqual(current.get('prepared_audio_key'),project.get('prepared_audio_key'))
+            self.assertEqual(read_json(result['backup']),project)
+            self.assertFalse(draft.exists())
+
+    def test_full_manual_on_fresh_separation_can_dub_and_export(self):
+        from voxlate.paired_segments import PairedSegmentPlan
+        f=self.integration
+        f.work=f.video.with_name(f.video.name+'.voxlate')/'manual-fresh'
+        f.run_pipeline(stop_after='separate',voice_mode='individual')
+        self.path=f.work/'project.json'
+        project=read_json(self.path)
+        self.assertEqual(project['segments'],[])
+        plan=PairedSegmentPlan(project,0,-1,full=True)
+        plan.add_sentence(.2,1.1)
+        plan.add_sentence(1.6,2.5)
+        apply_segmentation(self.path,digest(project),f.cfg,plan.blocks,runner=self.runner,full=True)
+        calls=f.calls.copy()
+        f.run_pipeline(stop_after='dub',require_translated=True,voice_mode='individual')
+        f.run_pipeline(export_only=True,voice_mode='individual')
+        self.assertEqual(f.calls['asr'],calls['asr'])
+        self.assertEqual(f.calls['translator'],calls['translator'])
+        self.assertTrue(f.output.is_file())
+        current=read_json(self.path)
+        self.assertEqual([(s['start'],s['end']) for s in current['segments']],[(.2,1.1),(1.6,2.5)])
+
     def test_invalid_recognition_or_empty_translation_never_overwrites_project(self):
         for stage in ('asr','translator'):
             with self.subTest(stage=stage):

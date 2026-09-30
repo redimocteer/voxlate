@@ -61,7 +61,7 @@ def main():
         window = MainWindow(scratch / 'app-data', auto_check=False)
         project = dict(schema_version=1, name='voxlate', input=str(scratch / 'Morning walk.mp4'),
             duration=42, source_lang='en', target_lang='zh', recognition_model='asr_combined',
-            voice_mode='roles', roles_initialized=True,
+            voice_mode='roles', roles_initialized=True, prepared_audio_key='synthetic-demo',
             roles=[dict(id=k, name=n, reference_sentence_id=i) for k, n, i in
                    [('a', '旅人', 3), ('b', '摄影师', 2), ('c', '朋友', 8)]],
             segments=[dict(id=i, start=start, end=end, source_text=src, target_text=dst,
@@ -102,6 +102,17 @@ def main():
         capture(editor, 'segmentation.png')
         editor.close()
 
+        full_editor = SegmentationDialog(project, 0, len(project['segments'])-1,
+            audio, audio, [peaks, peaks], parent=window, full=True)
+        for start, end in ((1,3.1),(3.8,6.2),(7.8,9.2),(9.5,11),(11.7,14),(15,18),(22,25)):
+            full_editor.plan.add_sentence(start,end)
+        full_editor.canvas.span=18
+        full_editor.render()
+        full_editor.select_block(2)
+        capture(full_editor, 'segmentation-full.png')
+        full_editor.close()
+        full_editor.deleteLater()
+
         # Illustrative resource status only; do not inspect or download real installations.
         window.resources_checked([ResourceStatus(k, info.title, True, '示例资源状态', '')
                                   for k, info in CATALOG.items()])
@@ -123,7 +134,7 @@ def main():
         if resolved.parent != (ROOT / 'temp').resolve() or not resolved.name.startswith('readme-'):
             raise RuntimeError('Unexpected screenshot scratch path')
         shutil.rmtree(resolved)
-    print(f'Saved four synthetic UI screenshots to {output}')
+    print(f'Saved five synthetic UI screenshots to {output}')
 
 
 if __name__ == '__main__':

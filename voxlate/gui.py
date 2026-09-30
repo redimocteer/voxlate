@@ -425,9 +425,12 @@ class MainWindow(QMainWindow):
         voice_row.addWidget(self.role_voice)
         self.role_manager_button = self.button('角色管理…', self.manage_roles)
         voice_row.addWidget(self.role_manager_button)
+        self.full_segmentation_button = self.button('手动分句...', self.open_full_segmentation)
+        self.full_segmentation_button.setToolTip('分离后可用。从空白时间轴手动划分全片；应用时替换原分句并备份。')
+        voice_row.addWidget(self.full_segmentation_button)
         voice_row.addStretch()
         self.segmentation_range = None
-        self.manual_segmentation_button = self.button('手动分句...', self.open_selected_segmentation)
+        self.manual_segmentation_button = self.button('手动微调...', self.open_selected_segmentation)
         self.manual_segmentation_button.hide()
         self.release_model_button = self.button('释放模型', self.release_models)
         self.release_model_button.setToolTip('释放显存，下次配音需重新加载。')
@@ -1428,6 +1431,7 @@ class MainWindow(QMainWindow):
         self.translate_button.setEnabled(self.task is None and bool((self.project or {}).get('segments')))
         self.one_click_button.setEnabled(self.task is None)
         self.role_manager_button.setEnabled(self.task is None and bool((self.project or {}).get('segments')))
+        self.full_segmentation_button.setEnabled(self.task is None and bool((self.project or {}).get('prepared_audio_key')))
         for row in range(self.table.rowCount()):
             combo = self.table.cellWidget(row, 5)
             if combo:
@@ -1926,18 +1930,22 @@ class MainWindow(QMainWindow):
         if self.segmentation_range:
             self.edit_segmentation(*self.segmentation_range)
 
-    def edit_segmentation(self, first, last):
-        if self.task is not None or not self.project or not 0 <= first <= last < len(self.project['segments']):
+    def open_full_segmentation(self):
+        if self.project and self.project.get('prepared_audio_key'):
+            self.edit_segmentation(0, len(self.project['segments'])-1, full=True)
+
+    def edit_segmentation(self, first, last, *, full=False):
+        if self.task is not None or not self.project or (not full and not 0 <= first <= last < len(self.project['segments'])):
             return
         if not self.save_translations():
             return
         from .segmentation import apply_segmentation, segmentation_needs_models
         from .paired_segments import PairedSegmentPlan
-        from .segmentation_dialog import SegmentationDialog, cached_waveform
+        from .segmentation_dialog import SegmentationDialog, cached_waveform, waveform_peaks
         from .app_settings import player_volume, save_player_volume
         path, cfg, project = self.project_path, copy.deepcopy(self.cfg), copy.deepcopy(self.project)
         expected = digest(project)
-        draft = path.parent/'.temp'/'segmentation-draft.json'
+        draft = path.parent/'.temp'/('segmentation-full-draft.json' if full else 'segmentation-draft.json')
         blocks = None
         original_selected = True
         try:
@@ -1946,12 +1954,12 @@ class MainWindow(QMainWindow):
                 raise VoxlateError('项目临时目录指向项目外，请移除目录链接后重试。')
             if draft.is_file():
                 saved = read_json(draft)
-                if (saved.get('project_hash') == expected and saved.get('blocks')
-                        and saved['blocks'][0]['start'] <= project['segments'][last]['end']
-                        and saved['blocks'][-1]['end'] >= project['segments'][first]['start']):
+                if (saved.get('project_hash') == expected and saved.get('blocks') and (full or (
+                        saved['blocks'][0]['start'] <= project['segments'][last]['end']
+                        and saved['blocks'][-1]['end'] >= project['segments'][first]['start']))):
                     blocks = saved['blocks']
                     original_selected = saved.get('use_original', True)
-            plan = PairedSegmentPlan(project, first, last, blocks)
+            plan = PairedSegmentPlan(project, first, last, blocks, full=full)
         except (OSError, ValueError, KeyError, VoxlateError) as exc:
             QMessageBox.warning(self, '无法编辑分句', str(exc))
             return
@@ -1961,7 +1969,9 @@ class MainWindow(QMainWindow):
             pipeline = VideoDubPipeline(cfg)
             pipeline.work, pipeline.project = path.parent, project
             original, vocals, _ = pipeline.cached_media()
-            return original, vocals, [cached_waveform(track, path.parent, plan.start, plan.end) for track in (original, vocals)]
+            waves = [cached_waveform(track, path.parent, plan.start, min(plan.end,plan.start+30) if full else plan.end) for track in (original,vocals)]
+            overview = [cached_waveform(track,path.parent,plan.start,plan.end,limit=20000) for track in (original,vocals)] if full else waves
+            return original, vocals, waves, overview
         def prepared(value):
             def open_when_idle():
                 if self.task is not None:
@@ -1969,12 +1979,14 @@ class MainWindow(QMainWindow):
                     return
                 if self.project_path != path or digest(self.project) != expected:
                     return
-                original, vocals, waves = value
+                original, vocals, waves, overview = value
                 def load_waves(start, end):
+                    if full:
+                        return [waveform_peaks(track, start=start, end=end) for track in (original, vocals)]
                     return [cached_waveform(track, path.parent, start, end) for track in (original, vocals)]
                 dialog = SegmentationDialog(project, first, last, original, vocals, waves,
                     blocks=blocks, volume=player_volume(self.data_dir),
-                    load_waves=load_waves, parent=self)
+                    load_waves=load_waves, parent=self, full=full, overview_waves=overview)
                 dialog.source.setCurrentIndex(0 if original_selected else 1)
                 dialog.volumeChanged.connect(lambda volume: save_player_volume(self.data_dir, volume))
                 accepted = dialog.exec() == QDialog.DialogCode.Accepted
@@ -1991,7 +2003,7 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, '无法保存草稿', str(exc))
                     return
                 def action(emit):
-                    return apply_segmentation(path, expected, cfg, selected_blocks, use_original=use_original)
+                    return apply_segmentation(path, expected, cfg, selected_blocks, use_original=use_original, full=full)
                 def complete(result):
                     self.load_project(path)
                     skipped = len(result.get('skipped', []))

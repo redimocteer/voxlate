@@ -70,11 +70,11 @@ def waveform_peaks(path, limit=150000, start=0., end=None):
     return dict(peaks=values, step=width/rate, duration=total/rate, start=first/rate, end=last/rate)
 
 
-def cached_waveform(path, project_directory, start=0., end=None):
+def cached_waveform(path, project_directory, start=0., end=None, *, limit=150000):
     from pathlib import Path
     path, root = Path(path), Path(project_directory).resolve()
     stat = path.stat()
-    key = digest('waveform-v2', str(path.resolve()), stat.st_size, stat.st_mtime_ns, start, end)
+    key = digest('waveform-v3', str(path.resolve()), stat.st_size, stat.st_mtime_ns, start, end, limit)
     cache = root/'.temp'/'waveforms'/f'{key}.json'
     if not cache.resolve().is_relative_to(root):
         raise VoxlateError('波形缓存目录指向项目外。')
@@ -85,7 +85,7 @@ def cached_waveform(path, project_directory, start=0., end=None):
                 return data
         except (OSError, ValueError, KeyError, TypeError):
             pass
-    data = waveform_peaks(path, start=start, end=end)
+    data = waveform_peaks(path, limit=limit, start=start, end=end)
     check_cancelled()
     write_json(cache, data)
     return data
@@ -179,6 +179,8 @@ class WaveformCanvas(QWidget):
     def mouseMoveEvent(self, event):
         if self.drag is not None:
             self.plan.move_cut(self.drag, self.seconds(event.position().x()))
+            self.position = self.plan.cuts[self.drag//2*2]
+            self.seek.emit(self.position)
             self.update()
         elif self.range_anchor is not None:
             self.range_end = self.seconds(event.position().x())
@@ -224,10 +226,10 @@ class WaveformCanvas(QWidget):
             lo, hi = max(0., self.x(start)), min(float(self.width()), self.x(end))
             if hi <= lo:
                 continue
-            color = QColor(COLORS[i])
+            color = QColor(COLORS[i % len(COLORS)])
             color.setAlpha(88 if i == self.current else 26)
             painter.fillRect(QRectF(lo, top, hi-lo, bottom-top), color)
-            painter.setPen(QColor(COLORS[i]))
+            painter.setPen(QColor(COLORS[i % len(COLORS)]))
             if hi-lo > 25:
                 painter.drawText(QRectF(lo+4, top+3, hi-lo-8, 22), Qt.AlignmentFlag.AlignCenter, str(self.plan.number(i)))
         peaks, step = self.waveform['peaks'], self.waveform['step']
@@ -255,7 +257,7 @@ class WaveformCanvas(QWidget):
             if not -8 <= x <= self.width()+8:
                 continue
             odd = i == len(self.plan.cuts)-1 and len(self.plan.cuts) % 2
-            color = QColor('#e23845' if odd else COLORS[i//2])
+            color = QColor('#e23845' if odd else COLORS[i//2 % len(COLORS)])
             painter.setPen(QPen(color, 3.5 if i//2 == self.current else 2.2,
                                 Qt.PenStyle.DashLine if odd else Qt.PenStyle.SolidLine))
             painter.drawLine(QPointF(x, top-9), QPointF(x, bottom))
@@ -267,26 +269,105 @@ class WaveformCanvas(QWidget):
             left, right = sorted((self.x(self.range_anchor), self.x(self.range_end)))
             painter.fillRect(QRectF(left, top, right-left, bottom-top), QColor(52, 102, 214, 65))
             painter.setPen(QPen(QColor('#3466d6'), 2, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(QRectF(left, top, right-left, bottom-top))
         painter.setPen(QPen(QColor('#293649'), 1.5))
         painter.drawLine(QPointF(self.x(self.position), top), QPointF(self.x(self.position), bottom))
+
+
+class WaveformOverview(QWidget):
+    """Whole-range navigator; moving its viewport never edits sentence bounds."""
+    def __init__(self, canvas, waveform, parent=None):
+        super().__init__(parent)
+        self.canvas, self.waveform = canvas, waveform
+        self.drag_offset = None
+        self.setFixedHeight(90)
+        self.setToolTip('全局波形：拖动蓝框定位，滚轮缩放上方波形。')
+        self.setAccessibleName('全局波形导航')
+        canvas.viewChanged.connect(self.update)
+
+    def seconds(self, x):
+        plan = self.canvas.plan
+        return plan.start + max(0., min(1., (x-14)/max(1,self.width()-28)))*(plan.end-plan.start)
+
+    def x(self, seconds):
+        plan = self.canvas.plan
+        return 14+(seconds-plan.start)/max(.001,plan.end-plan.start)*max(1,self.width()-28)
+
+    def navigate(self, seconds):
+        c = self.canvas
+        c.left = max(c.plan.start, min(c.plan.end-c.span, seconds))
+        c.update()
+        c.viewChanged.emit()
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(event)
+        seconds = self.seconds(event.position().x())
+        c = self.canvas
+        self.drag_offset = seconds-c.left if c.left <= seconds <= c.left+c.span else c.span/2
+        self.navigate(seconds-self.drag_offset)
+
+    def mouseMoveEvent(self, event):
+        if self.drag_offset is not None:
+            self.navigate(self.seconds(event.position().x())-self.drag_offset)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_offset = None
+
+    def wheelEvent(self, event):
+        anchor = self.seconds(event.position().x())
+        if not self.canvas.left <= anchor <= self.canvas.left+self.canvas.span:
+            self.navigate(anchor-self.canvas.span/2)
+        self.canvas.zoom(.8 if event.angleDelta().y()>0 else 1.25,
+                         anchor)
+        event.accept()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor('#f0f4fa'))
+        peaks, step = self.waveform['peaks'], self.waveform['step']
+        offset = self.waveform.get('start',0)
+        gain = max(.06,max(peaks,default=.06))
+        p.setPen(QPen(QColor('#7e91a7'),1))
+        for x in range(14,self.width()-14):
+            lo = max(0,int((self.seconds(x)-offset)/step))
+            hi = min(len(peaks),max(lo+1,math.ceil((self.seconds(x+1)-offset)/step)))
+            value = max(peaks[lo:hi],default=0)/gain*24
+            p.drawLine(QPointF(x,40-value),QPointF(x,40+value))
+        for index,(start,end) in enumerate(self.canvas.plan.pairs):
+            color=QColor(COLORS[index%len(COLORS)]);color.setAlpha(100)
+            p.fillRect(QRectF(self.x(start),66,max(1,self.x(end)-self.x(start)),4),color)
+        rect=QRectF(self.x(self.canvas.left),8,max(3,self.x(self.canvas.left+self.canvas.span)-self.x(self.canvas.left)),64)
+        p.fillRect(rect,QColor(52,102,214,35))
+        p.setPen(QPen(QColor('#3466d6'),2));p.setBrush(Qt.BrushStyle.NoBrush);p.drawRect(rect)
+        p.setPen(QColor('#61728a'))
+        p.drawText(QRectF(14,71,self.width()-28,18),Qt.AlignmentFlag.AlignLeft,time_text(self.canvas.plan.start)[:-1])
+        p.drawText(QRectF(14,71,self.width()-28,18),Qt.AlignmentFlag.AlignRight,time_text(self.canvas.plan.end)[:-1])
 
 
 class SegmentationDialog(QDialog):
     volumeChanged = Signal(int)
 
     def __init__(self, project, first, last, original, vocals, waves, *, blocks=None, volume=80,
-                 load_waves=None, parent=None):
+                 load_waves=None, parent=None, full=False, overview_waves=None):
         super().__init__(parent)
-        self.plan = PairedSegmentPlan(project, first, last, blocks)
+        self.plan = PairedSegmentPlan(project, first, last, blocks, full=full)
         self.wave_loader = load_waves
         self.worker = None
-        self.setWindowTitle('手动分句' + (' · 已恢复草稿' if blocks else ''))
+        self.setWindowTitle(('手动分句 · 全片' if full else '手动微调') + (' · 已恢复草稿' if blocks else ''))
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
         self.resize(1120, 680)
         self.setMinimumSize(1040, 560)
         self.preview_range = None
         self.current = 0
         self.original, self.vocals, self.waves = original, vocals, waves
+        self.overview_waves = overview_waves or waves
+        self.rendered_cuts = None
+        self.playing_row = None
+        self.detail_worker = None
+        self.play_icon, self.stop_icon, self.trash_icon = playback_icon(False), editor_icon('stop'), editor_icon('trash')
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
         self.audio.setVolume(volume/100)
@@ -298,16 +379,25 @@ class SegmentationDialog(QDialog):
         self.undo_button.clicked.connect(lambda: self.history(False))
         self.redo_button.clicked.connect(lambda: self.history(True))
         self.canvas = WaveformCanvas(self.plan, waves[0])
+        if full:
+            self.canvas.span = min(30., self.plan.end-self.plan.start)
         self.canvas.selected.connect(self.select_block)
         self.canvas.seek.connect(self.seek)
         self.canvas.preview.connect(self.preview_row)
         self.canvas.changed.connect(self.edited)
         self.canvas.notice.connect(self.message_notice)
         layout.addWidget(self.canvas, 1)
-        self.scroll = QScrollBar(Qt.Orientation.Horizontal)
+        self.scroll = QScrollBar(Qt.Orientation.Horizontal, self)
+        self.scroll.hide()
         self.scroll.valueChanged.connect(self.scroll_view)
         self.canvas.viewChanged.connect(self.update_scroll)
-        layout.addWidget(self.scroll)
+        self.overview = WaveformOverview(self.canvas, self.overview_waves[0])
+        layout.addWidget(self.overview)
+        self.detail_timer = QTimer(self)
+        self.detail_timer.setSingleShot(True)
+        self.detail_timer.setInterval(150)
+        self.detail_timer.timeout.connect(self.load_detail)
+        self.canvas.viewChanged.connect(lambda: self.detail_timer.start())
         controls = QHBoxLayout()
         self.play = QPushButton()
         self.play.setFixedWidth(36)
@@ -331,14 +421,9 @@ class SegmentationDialog(QDialog):
         controls.addStretch()
         controls.addWidget(self.undo_button)
         controls.addWidget(self.redo_button)
-        self.left_button, self.right_button = QPushButton('向左扩展1句'), QPushButton('向右扩展1句')
-        self.left_button.clicked.connect(lambda: self.extend('start'))
-        self.right_button.clicked.connect(lambda: self.extend('end'))
-        controls.addWidget(self.left_button)
-        controls.addWidget(self.right_button)
-        fit = QPushButton('适应范围')
-        fit.clicked.connect(self.canvas.fit)
-        controls.addWidget(fit)
+        hint=QLabel('拖选新增 · 拖边界调整 · 下方蓝框定位 · 滚轮缩放')
+        hint.setStyleSheet('color: #61728a;')
+        controls.addWidget(hint)
         layout.addLayout(controls)
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(['句号', '时间', '试听', '原文', ''])
@@ -353,7 +438,8 @@ class SegmentationDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setMinimumHeight(175)
         self.table.currentCellChanged.connect(lambda row, col, old, oldcol: self.select_block(row))
-        self.table.cellDoubleClicked.connect(lambda row, col: self.preview_row(row))
+        self.table.cellDoubleClicked.connect(lambda row, col: self.preview_row(row) if col not in (2, 4) else None)
+        self.table.cellClicked.connect(self.table_action)
         layout.addWidget(self.table, 1)
         footer = QHBoxLayout()
         self.message = QLabel()
@@ -363,6 +449,7 @@ class SegmentationDialog(QDialog):
         self.cancel_button.clicked.connect(self.reject)
         footer.addWidget(self.cancel_button)
         self.apply_button = QPushButton('应用修改')
+        self.apply_button.setToolTip('替换全片分句；未划选处保留原声，原项目自动备份。' if full else '')
         self.apply_button.setObjectName('primary')
         self.apply_button.clicked.connect(self.apply)
         footer.addWidget(self.apply_button)
@@ -400,48 +487,70 @@ class SegmentationDialog(QDialog):
     def render(self):
         self.current = min(self.current, len(self.plan.pairs)-1)
         self.canvas.current = self.current
-        self.table.blockSignals(True)
-        self.table.setRowCount(len(self.plan.pairs))
-        for index, (start, end) in enumerate(self.plan.pairs):
-            text = next((row['source_text'] for row in self.plan.project['segments']
-                         if abs(row['start']-start) < 1e-6 and abs(row['end']-end) < 1e-6), '')
-            for col, value in ((0, str(self.plan.number(index))), (1, f'{time_text(start)} → {time_text(end)}'), (3, text)):
-                item = QTableWidgetItem(value)
-                if col != 3:
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                if col == 0:
-                    item.setForeground(QColor(COLORS[index]))
-                if col == 3:
-                    item.setToolTip(text)
-                    item.setForeground(QColor('#8994a5'))
-                self.table.setItem(index, col, item)
-            play = QPushButton()
-            play.setIcon(playback_icon(False))
-            play.setAccessibleName(f'试听第 {self.plan.number(index)} 句')
-            play.clicked.connect(lambda checked=False, row=index: self.preview_row(row))
-            delete = QPushButton()
-            delete.setIcon(editor_icon('trash'))
-            delete.setToolTip('删除此句（D / Delete），保留原声。')
-            delete.setAccessibleName(f'删除第 {self.plan.number(index)} 句')
-            delete.setEnabled(self.worker is None)
-            delete.clicked.connect(lambda checked=False, row=index: self.delete_sentence(row))
-            for col, button in ((2, play), (4, delete)):
-                button.setAutoDefault(False)
-                self.table.setCellWidget(index, col, button)
-            self.table.setRowHeight(index, 35)
-        self.table.blockSignals(False)
-        self.select_block(self.current)
+        signature = tuple(self.plan.cuts)
+        if signature != self.rendered_cuts:
+            self.rendered_cuts = signature
+            self.playing_row = None
+            self.table.blockSignals(True)
+            self.table.setRowCount(len(self.plan.pairs))
+            for index, (start, end) in enumerate(self.plan.pairs):
+                text = self.plan.original_rows.get((start,end), {}).get('source_text','')
+                for col, value in ((0, str(self.plan.number(index))), (1, f'{time_text(start)} → {time_text(end)}'), (3, text)):
+                    item = QTableWidgetItem(value)
+                    if col != 3:
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    if col == 0:
+                        item.setForeground(QColor(COLORS[index % len(COLORS)]))
+                    if col == 3:
+                        item.setToolTip(text)
+                        item.setForeground(QColor('#8994a5'))
+                    self.table.setItem(index, col, item)
+                if self.plan.full:
+                    for col, icon, tip in ((2, self.play_icon, '试听 / 停止'),
+                                           (4, self.trash_icon, '删除此句（D / Delete）')):
+                        item = QTableWidgetItem()
+                        item.setIcon(icon)
+                        item.setToolTip(tip)
+                        self.table.setItem(index, col, item)
+                    self.table.setRowHeight(index,35)
+                    continue
+                play = QPushButton()
+                play.setIcon(playback_icon(False))
+                play.setAccessibleName(f'试听第 {self.plan.number(index)} 句')
+                play.clicked.connect(lambda checked=False, row=index: self.preview_row(row))
+                delete = QPushButton()
+                delete.setIcon(editor_icon('trash'))
+                delete.setToolTip('删除此句（D / Delete），保留原声。')
+                delete.setAccessibleName(f'删除第 {self.plan.number(index)} 句')
+                delete.setEnabled(self.worker is None)
+                delete.clicked.connect(lambda checked=False, row=index: self.delete_sentence(row))
+                for col, button in ((2, play), (4, delete)):
+                    button.setAutoDefault(False)
+                    self.table.setCellWidget(index, col, button)
+                self.table.setRowHeight(index, 35)
+            self.table.blockSignals(False)
+            self.select_block(self.current)
         busy = self.worker is not None
         self.canvas.setEnabled(not busy)
         self.source.setEnabled(not busy)
+        self.overview.setEnabled(not busy)
+        if not self.plan.full:
+            for row in range(self.table.rowCount()):
+                self.table.cellWidget(row, 4).setEnabled(not busy)
         self.undo_button.setEnabled(not busy and bool(self.plan.undo_stack))
         self.redo_button.setEnabled(not busy and bool(self.plan.redo_stack))
-        self.left_button.setEnabled(not busy and self.plan.first > 0 and len(self.plan.cuts) <= 18)
-        self.right_button.setEnabled(not busy and self.plan.last+1 < len(self.plan.project['segments']) and len(self.plan.cuts) <= 18)
-        self.apply_button.setEnabled(not busy)
+        self.apply_button.setEnabled(not busy and (not self.plan.full or bool(self.plan.pairs)))
         self.apply_button.setText('应用并识别翻译' if segmentation_needs_models(self.plan.project, self.plan.blocks) else '应用修改')
         self.update_playback_controls()
         self.canvas.update()
+        self.overview.update()
+
+    def table_action(self, row, column):
+        if self.plan.full and self.worker is None:
+            if column == 2:
+                self.preview_row(row)
+            elif column == 4:
+                self.delete_sentence(row)
 
     def select_block(self, index):
         if not 0 <= index < len(self.plan.pairs):
@@ -456,6 +565,9 @@ class SegmentationDialog(QDialog):
         self.table.blockSignals(True)
         self.table.setCurrentCell(index, 0)
         self.table.blockSignals(False)
+        start, end = self.plan.pairs[index]
+        if self.canvas.drag is None and (end < self.canvas.left or start > self.canvas.left+self.canvas.span):
+            self.overview.navigate(start-self.canvas.span*.1)
         self.canvas.update()
 
     def edited(self):
@@ -523,6 +635,9 @@ class SegmentationDialog(QDialog):
             start, end = self.plan.start, self.plan.end
             def complete(waves):
                 self.waves = waves
+                self.overview_waves = waves
+                self.overview.waveform = waves[self.source.currentIndex()]
+                self.overview.update()
                 self.canvas.waveform = waves[self.source.currentIndex()]
                 self.canvas.update()
                 self.message.clear()
@@ -541,10 +656,48 @@ class SegmentationDialog(QDialog):
         self.scroll.setPageStep(max(1, round(self.canvas.span*1000)))
         self.scroll.setValue(round(self.canvas.left*1000))
         self.scroll.blockSignals(False)
+        if hasattr(self,'overview'):
+            self.overview.update()
+
+    def load_detail(self):
+        if not self.plan.full or not self.wave_loader or getattr(self,'closing',False):
+            return
+        if self.detail_worker is not None:
+            self.detail_timer.start()
+            return
+        if self.canvas.span > 600:
+            self.canvas.waveform = self.overview_waves[self.source.currentIndex()]
+            self.canvas.update()
+            return
+        left = max(self.plan.start,self.canvas.left-self.canvas.span*.25)
+        end = min(self.plan.end,self.canvas.left+self.canvas.span*1.25)
+        view = (self.canvas.left,self.canvas.span)
+        data = self.canvas.waveform
+        if data.get('start',0) <= self.canvas.left and data.get('end',0) >= sum(view) and data['step'] <= .011:
+            return
+        from .gui import TaskThread
+        worker = self.detail_worker = TaskThread(lambda emit: self.wave_loader(left,end))
+        def complete(waves):
+            if view == (self.canvas.left,self.canvas.span):
+                self.waves = waves
+                self.canvas.waveform = waves[self.source.currentIndex()]
+                self.canvas.update()
+        def finished():
+            self.detail_worker = None
+            worker.deleteLater()
+            if getattr(self,'closing',False):
+                self.done(getattr(self,'pending_result',QDialog.DialogCode.Rejected))
+            elif view != (self.canvas.left,self.canvas.span):
+                self.detail_timer.start()
+        worker.result.connect(complete)
+        worker.failure.connect(self.message.setText)
+        worker.finished.connect(finished)
+        worker.start()
 
     def scroll_view(self, value):
         self.canvas.left = value/1000
         self.canvas.update()
+        self.canvas.viewChanged.emit()
 
     def media_ready(self, status):
         if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia) and self.pending_position is not None:
@@ -562,12 +715,20 @@ class SegmentationDialog(QDialog):
 
     def update_playback_controls(self, *_):
         active = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState or getattr(self, 'pending_play', False)
-        self.play.setIcon(editor_icon('stop') if active else playback_icon(False))
+        self.play.setIcon(self.stop_icon if active else self.play_icon)
+        if self.plan.full:
+            pairs = self.plan.pairs
+            playing = pairs.index(self.preview_range) if active and self.preview_range in pairs else None
+            for row in {self.playing_row, playing} - {None}:
+                if (item := self.table.item(row, 2)) is not None:
+                    item.setIcon(self.stop_icon if row == playing else self.play_icon)
+            self.playing_row = playing
+            return
         for index, pair in enumerate(self.plan.pairs):
             button = self.table.cellWidget(index, 2)
             if button:
                 playing = active and self.preview_range == pair
-                button.setIcon(editor_icon('stop') if playing else playback_icon(False))
+                button.setIcon(self.stop_icon if playing else self.play_icon)
                 button.setAccessibleName('停止试听' if playing else f'试听第 {self.plan.number(index)} 句')
 
     def stop_playback(self):
@@ -621,6 +782,9 @@ class SegmentationDialog(QDialog):
         self.player.stop()
         self.player.setSource(QUrl.fromLocalFile(str(self.original if index == 0 else self.vocals)))
         self.canvas.waveform = self.waves[index]
+        self.overview.waveform = self.overview_waves[index]
+        self.overview.update()
+        self.detail_timer.start()
         self.render()
 
     def tick(self):
@@ -636,7 +800,7 @@ class SegmentationDialog(QDialog):
         self.clock.setText(time_text(seconds))
         if seconds > self.canvas.left+self.canvas.span or seconds < self.canvas.left:
             self.canvas.left = max(self.plan.start, min(self.plan.end-self.canvas.span, seconds-self.canvas.span*.1))
-            self.update_scroll()
+            self.canvas.viewChanged.emit()
         self.canvas.update()
 
     def keyPressEvent(self, event):
@@ -664,6 +828,12 @@ class SegmentationDialog(QDialog):
         self.accept()
 
     def done(self, result):
+        self.detail_timer.stop()
+        if self.detail_worker is not None:
+            self.closing = True
+            self.pending_result = result
+            self.detail_worker.cancel.set()
+            return
         if self.worker is not None:
             self.closing = True
             self.worker.cancel.set()
