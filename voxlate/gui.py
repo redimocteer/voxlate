@@ -305,6 +305,8 @@ class MainWindow(QMainWindow):
         self.player_windows = {}
         self.sentence_player = None
         self.playing_sentence = None
+        self.sentence_pending = False
+        self.sentence_source_key = None
         self.resource_nodes = {}
         self.row_buttons = {}
         self.setAcceptDrops(True)
@@ -1540,42 +1542,75 @@ class MainWindow(QMainWindow):
             widget.dub.setToolTip('重新配音本句' if ready else '生成本句配音（未生成或内容、音色已修改）')
             widget.play.setEnabled(bool(self.sentence_audio(segment)))
             widget.play.setToolTip('试听本句配音' if ready else '试听上次配音；当前修改尚未生成')
-            playing = self.sentence_player and self.playing_sentence == (row, False) and self.sentence_player.playbackState() == self.sentence_player.PlaybackState.PlayingState
-            widget.play.setIcon(widget.play_icons[1 if playing else 0])
-            widget.play.setAccessibleName('停止试听' if playing else '试听本句配音')
             original = self.table.cellWidget(row, 4)
             original.play.setEnabled(bool(self.original_sentence_audio(segment)))
             original.play.setToolTip('试听本句原人声（分离后，无背景混合，原始语速）')
-            playing_original = self.sentence_player and self.playing_sentence == (row, True) and self.sentence_player.playbackState() == self.sentence_player.PlaybackState.PlayingState
-            original.play.setIcon(widget.play_icons[1 if playing_original else 0])
-            original.play.setAccessibleName('停止试听' if playing_original else '试听本句原人声')
+            self.refresh_sentence_play_icons(row)
 
-    def stop_sentence_audio(self):
+    def refresh_sentence_play_icons(self, row):
+        widget = self.table.cellWidget(row, 3) if 0 <= row < self.table.rowCount() else None
+        if widget is None:
+            return
+        for column, original, label in ((3, False, '试听本句配音'), (4, True, '试听本句原人声')):
+            controls = self.table.cellWidget(row, column)
+            if controls is not None:
+                active = self.playing_sentence == (row, original)
+                controls.play.setIcon(widget.play_icons[1 if active else 0])
+                controls.play.setAccessibleName('停止试听' if active else label)
+
+    def stop_sentence_audio(self, release=True):
+        previous = self.playing_sentence
+        self.playing_sentence = None
         self.sentence_pending = False
         self.sentence_end = None
         if hasattr(self, 'sentence_timer'):
             self.sentence_timer.stop()
         if self.sentence_player:
             self.sentence_player.stop()
-            self.sentence_player.setSource(QUrl())
-        self.playing_sentence = None
+            if release:
+                self.sentence_player.setSource(QUrl())
+                self.sentence_source_key = None
+        self.table.set_playback_progress()
+        if previous:
+            self.refresh_sentence_play_icons(previous[0])
+
+    def sentence_playback_state_changed(self, state):
+        if not self.playing_sentence:
+            return
+        if state == self.sentence_player.PlaybackState.StoppedState and not self.sentence_pending:
+            self.stop_sentence_audio(release=False)
+        else:
+            self.refresh_sentence_play_icons(self.playing_sentence[0])
+
+    def sentence_playback_error(self, error, text):
+        self.stop_sentence_audio()
+        self.notify('单句试听失败：' + text)
 
     def begin_sentence_audio(self, status):
         from PySide6.QtMultimedia import QMediaPlayer
-        if self.sentence_pending and status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
+        if self.sentence_pending and status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia,
+                                               QMediaPlayer.MediaStatus.EndOfMedia):
             self.sentence_pending = False
             self.sentence_player.setPosition(self.sentence_start)
             self.sentence_player.play()
-            if self.sentence_end is not None:
+            if self.playing_sentence:
+                self.table.set_playback_progress(self.playing_sentence[0], 0.)
                 self.sentence_timer.start()
 
     def check_sentence_end(self):
-        if self.sentence_end is not None and self.sentence_player.position() >= self.sentence_end:
-            self.stop_sentence_audio()
-            self.refresh_sentence_buttons()
+        if not self.playing_sentence or self.sentence_pending:
+            return
+        end = self.sentence_end if self.sentence_end is not None else self.sentence_player.duration()
+        if end > self.sentence_start:
+            position = self.sentence_player.position()
+            if position >= end:
+                self.stop_sentence_audio(release=False)
+            else:
+                self.table.set_playback_progress(self.playing_sentence[0],
+                    (position-self.sentence_start)/(end-self.sentence_start))
 
     def play_sentence(self, row, original=False):
-        if not self.project or row >= len(self.project['segments']):
+        if not self.project or not 0 <= row < len(self.project['segments']):
             return
         segment = self.project['segments'][row]
         selection = self.original_sentence_audio(segment) if original else (self.sentence_audio(segment), 0, None)
@@ -1588,22 +1623,34 @@ class MainWindow(QMainWindow):
             self.sentence_output = QAudioOutput(self)
             self.sentence_output.setVolume(1.)
             self.sentence_player.setAudioOutput(self.sentence_output)
-            self.sentence_player.playbackStateChanged.connect(lambda state: self.refresh_sentence_buttons())
+            self.sentence_player.playbackStateChanged.connect(self.sentence_playback_state_changed)
             self.sentence_player.mediaStatusChanged.connect(self.begin_sentence_audio)
-            self.sentence_player.errorOccurred.connect(lambda error, text: self.notify('单句试听失败：' + text))
+            self.sentence_player.errorOccurred.connect(self.sentence_playback_error)
             self.sentence_timer = QTimer(self)
-            self.sentence_timer.setInterval(20)
+            self.sentence_timer.setInterval(30)
             self.sentence_timer.timeout.connect(self.check_sentence_end)
         if self.playing_sentence == (row, original) and (self.sentence_pending or self.sentence_player.playbackState() == self.sentence_player.PlaybackState.PlayingState):
-            self.stop_sentence_audio()
+            self.stop_sentence_audio(release=False)
         else:
-            self.stop_sentence_audio()
+            self.stop_sentence_audio(release=False)
+            path = Path(audio).resolve()
+            try:
+                stat = path.stat()
+            except OSError as exc:
+                self.notify('单句试听失败：' + str(exc))
+                return
+            source_key = (str(path), stat.st_size, stat.st_mtime_ns)
             self.playing_sentence = (row, original)
             self.sentence_start, self.sentence_end = start, end
             self.sentence_pending = True
-            self.sentence_player.setSource(QUrl.fromLocalFile(str(Path(audio).resolve())))
+            if source_key != self.sentence_source_key:
+                # A regenerated take can overwrite the same filename.
+                if self.sentence_player.source() == QUrl.fromLocalFile(str(path)):
+                    self.sentence_player.setSource(QUrl())
+                self.sentence_source_key = source_key
+                self.sentence_player.setSource(QUrl.fromLocalFile(str(path)))
             self.begin_sentence_audio(self.sentence_player.mediaStatus())
-        self.refresh_sentence_buttons()
+        self.refresh_sentence_play_icons(row)
 
     def dub_sentence(self, row):
         if self.task or not self.project or row >= len(self.project['segments']):

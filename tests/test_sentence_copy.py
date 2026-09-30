@@ -38,6 +38,22 @@ class SentenceCopyTests(unittest.TestCase):
             self.table.setCurrentCell(0, column)
             self.assertEqual(self.copy(), expected)
 
+    def test_playback_background_shrinks_right_without_changing_selection_or_text(self):
+        item = self.table.item(1, 0)
+        self.table.setCurrentCell(1, 0)
+        self.table.set_playback_progress(1, .5)
+        self.app.processEvents()
+        rect = self.table.visualItemRect(item)
+        image = self.table.viewport().grab().toImage()
+        left = image.pixelColor(rect.left()+5, rect.top()+3)
+        right = image.pixelColor(rect.right()-5, rect.top()+3)
+        self.assertNotEqual(left, right)
+        self.assertEqual(item.text(), '00:00')
+        self.assertTrue(item.isSelected())
+        self.table.set_playback_progress()
+        self.assertIsNone(self.table.playback_row)
+        self.assertTrue(item.isSelected())
+
     def test_mouse_rectangle_selects_multiple_text_cells(self):
         start = self.table.visualItemRect(self.table.item(0, 1)).center()
         end = self.table.visualItemRect(self.table.item(2, 2)).center()

@@ -1487,7 +1487,8 @@ class GuiTests(unittest.TestCase):
             with patch.object(QMediaPlayer, 'position', return_value=2000):
                 self.window.check_sentence_end()
             self.assertIsNone(self.window.playing_sentence)
-            self.assertTrue(self.window.sentence_player.source().isEmpty())
+            self.assertEqual(Path(self.window.sentence_player.source().toLocalFile()), vocals.resolve())
+            self.assertIsNone(self.window.table.playback_row)
             clip = path.parent/'source_clip.wav'
             dub = path.parent/'dub.wav'
             tone(clip, 1)
@@ -1500,6 +1501,66 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(Path(self.window.sentence_player.source().toLocalFile()), dub.resolve())
             self.assertEqual(self.window.playing_sentence, (0, False))
             self.assertIsNone(self.window.sentence_end)
+
+    def test_sentence_playback_reuses_source_and_updates_only_active_rows(self):
+        from test_pipeline import tone
+        from PySide6.QtMultimedia import QMediaPlayer
+        video = Path(self.directory.name)/'source.mp4'
+        path = self.window.default_project_path(video)
+        vocals = path.parent/'separated'/'htdemucs'/'original'/'vocals.wav'
+        tone(vocals, 3)
+        write_json(path, dict(schema_version=1, name='voxlate', input=str(video), duration=3,
+            separator_model='htdemucs', segments=[dict(id=i+1, start=i, end=i+1,
+                source_text='Hello', target_text='你好') for i in range(2)]))
+        self.window.load_project(path)
+        with patch.object(QMediaPlayer, 'play'), patch.object(QMediaPlayer, 'mediaStatus', return_value=QMediaPlayer.MediaStatus.LoadedMedia), \
+                patch.object(self.window, 'refresh_sentence_buttons', side_effect=AssertionError('Full table scan during playback')):
+            self.window.play_sentence(0, original=True)
+            player = self.window.sentence_player
+            with patch.object(player, 'setSource', wraps=player.setSource) as load:
+                self.window.play_sentence(1, original=True)
+                load.assert_not_called()
+                self.assertEqual(self.window.playing_sentence, (1, True))
+                with patch.object(player, 'position', return_value=1500):
+                    self.window.check_sentence_end()
+                self.assertEqual(self.window.table.playback_row, 1)
+                self.assertAlmostEqual(self.window.table.playback_progress, .5)
+                with patch.object(player, 'position', return_value=2000):
+                    self.window.check_sentence_end()
+                self.assertIsNone(self.window.table.playback_row)
+                self.window.play_sentence(0, original=True)
+                load.assert_not_called()
+                self.window.stop_sentence_audio(release=False)
+                tone(vocals, 4)
+                self.window.play_sentence(0, original=True)
+                self.assertEqual(load.call_count, 2, 'Overwritten audio must unload and reopen')
+            self.window.stop_sentence_audio()
+            self.assertTrue(player.source().isEmpty(), 'Project changes release file handles')
+
+    def test_dubbing_progress_uses_actual_audio_duration_and_clears_on_end_or_error(self):
+        from test_pipeline import tone
+        from PySide6.QtMultimedia import QMediaPlayer
+        video = Path(self.directory.name)/'source.mp4'
+        path = self.window.default_project_path(video)
+        audio = path.parent/'dub.wav'
+        tone(audio, 2)
+        write_json(path, dict(schema_version=1, name='voxlate', input=str(video), duration=4,
+            segments=[dict(id=1, start=0, end=4, source_text='Hello', target_text='你好', tts_audio=str(audio))]))
+        self.window.load_project(path)
+        with patch.object(QMediaPlayer, 'play'), patch.object(QMediaPlayer, 'mediaStatus', return_value=QMediaPlayer.MediaStatus.LoadedMedia):
+            self.window.play_sentence(0)
+            player = self.window.sentence_player
+            with patch.object(player, 'position', return_value=500), patch.object(player, 'duration', return_value=2000):
+                self.window.check_sentence_end()
+            self.assertAlmostEqual(self.window.table.playback_progress, .25)
+            self.window.sentence_playback_state_changed(QMediaPlayer.PlaybackState.StoppedState)
+            self.assertIsNone(self.window.table.playback_row)
+            self.window.play_sentence(0)
+            with patch.object(self.window, 'notify') as notify:
+                self.window.sentence_playback_error(None, 'test error')
+                notify.assert_called_once()
+            self.assertIsNone(self.window.table.playback_row)
+            self.assertIsNone(self.window.playing_sentence)
 
     def test_statistics_emit_completion_log_before_review(self):
         model = Path(self.window.cfg["asr"]["model_path"])

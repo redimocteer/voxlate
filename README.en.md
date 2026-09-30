@@ -80,6 +80,7 @@ Voice schemes retain separate audio caches. Switching does not delete another sc
 - **Original text:** click to include/discard; discarded lines are dimmed. Select one or more consecutive time cells, then click **手动分句…** on the right. Hover timestamps for millisecond precision; hover each header title or its **i** icon for help.
 - **Original ▶:** plays separated vocals at the original pace.
 - **Translation ● / ▶:** the red dot regenerates only that line without confirmation. Play previews existing Chinese speech, preferring aligned audio. Neither line preview includes background.
+- **Preview progress:** the time cell's light-blue background shrinks toward the right as the remaining audio plays. Click the playback button again to stop. Repeated previews reuse the open audio source.
 - **Translate/generate again:** existing results require confirmation. Retranslation reuses unchanged recognition; confirming batch generation regenerates selected lines in the current scheme. Edited text can still preview old audio but needs regeneration before export.
 - **White-to-blue gradient:** generated duration divided by the original time window indicates compression demand. It starts above 1.2×, covers one quarter at 1.6× and one half at 2× or more. This is not recognition confidence; tiny windows can exaggerate the ratio.
 
