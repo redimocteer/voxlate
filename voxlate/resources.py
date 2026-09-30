@@ -40,7 +40,7 @@ for _key, _model in MODELS.items():
 for _key, _model in ASR_MODELS.items():
     CATALOG[_key] = ResourceInfo(_model["title"], "模型", f"约 {_model['size'] / 1_000_000_000:.2f} GB", _model["relative"])
 CATALOG = {key: CATALOG[key] for key in ("ffmpeg", "llm_engine", "runtime", "qwen", "separator", "tts",
-                                      "asr_large_model", "asr_turbo_model", "asr_qwen_model", "hy7_model", "separator_model", "tts_model")}
+                                      "separator_model", "asr_qwen_model", "asr_large_model", "asr_turbo_model", "hy7_model", "tts_model")}
 
 PURPOSES = {
     'ffmpeg': '用于提取音轨、处理音视频和导出视频。',

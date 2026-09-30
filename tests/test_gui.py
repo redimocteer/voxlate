@@ -411,7 +411,7 @@ class GuiTests(unittest.TestCase):
         heading = self.window.resource_nodes['asr_turbo_model'].parent()
         index = heading.indexOfChild(self.window.resource_nodes['asr_turbo_model'])
         self.assertIs(self.window.resource_tree.itemWidget(heading.child(index+1),0).findChild(QRadioButton),self.window.combined_asr)
-        self.assertIs(heading.child(index+2),self.window.resource_nodes['asr_qwen_model'])
+        self.assertIs(heading.child(0),self.window.resource_nodes['asr_qwen_model'])
         self.assertEqual(self.window.combined_asr.text(),'综合识别（turbo + v3）')
         with patch.object(self.window, 'inspect'):
             self.window.combined_asr.click()
@@ -1073,7 +1073,9 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(translation_parent.text(0), "模型")
         self.assertEqual(self.window.resource_nodes["hy7_model"].text(0), "翻译模型 · Hy-MT2 7B")
         self.assertEqual([asr_parent.child(i).data(0, Qt.ItemDataRole.UserRole) for i in range(asr_parent.childCount()) if asr_parent.child(i).data(0, Qt.ItemDataRole.UserRole)],
-                         ["asr_large_model", "asr_turbo_model", "asr_qwen_model"])
+                         ["asr_qwen_model", "asr_large_model", "asr_turbo_model"])
+        self.assertEqual([translation_parent.child(i).text(0) for i in range(translation_parent.childCount())],
+                         [CATALOG['separator_model'].title, '识别模型', '翻译模型 · Hy-MT2 7B', CATALOG['tts_model'].title])
         self.assertEqual([tree.headerItem().text(i) for i in range(6)], ["检查项", "空间", "状态", "", "", ""])
         for key, node in self.window.resource_nodes.items():
             if key in self.window.model_buttons:
