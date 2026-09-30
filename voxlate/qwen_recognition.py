@@ -123,6 +123,33 @@ def alignment_rows(aligned, language):
         chunk['start'], chunk['end']-chunk['start'], language)
 
 
+def protect_uncertain_rows(rows):
+    """Prefer original audio over dubbing unsupported Qwen word timings.
+
+    These are conservative alignment checks, not calibrated speech confidence.
+    Isolated zero-length words are common and do not by themselves reject a line.
+    Apply after every cache read as well as fresh inference; never mutate raw cache.
+    """
+    for row in rows:
+        words = row.get('words', [])
+        zero = sum(word['end']-word['start'] <= .001 for word in words)
+        if row.get('timing_fallback'):
+            reason = '无法确定对白时间'
+        elif row.get('timing_uncertain'):
+            reason = '部分词语无法可靠定位'
+        elif words and zero == len(words):
+            reason = '所有词语起止时间相同'
+        elif zero >= 3 and zero*2 >= len(words):
+            reason = '大量词语起止时间相同'
+        elif any(word['end']-word['start'] > 4 for word in words):
+            reason = '单个词语占用时间过长'
+        else:
+            continue
+        row.update(enabled=False, timing_uncertain=True, auto_preserve_original=True,
+                   recognition_warning=reason)
+    return rows
+
+
 def transcribe(audio, config, work_dir):
     import soundfile as sf
     import librosa
@@ -225,7 +252,7 @@ def transcribe(audio, config, work_dir):
                     aligned = dict(chunk=chunk, words=[], timing_fallback=True)
                     chunk_rows = alignment_rows(aligned, config.get('language', 'en'))
                     model_event(work_dir, f"Qwen 第 {index+1} 块（{format_timestamp(chunk['start'])}–{format_timestamp(chunk['end'])}）"
-                        '无法精确对齐：保留文字和原声，暂不配音，可手动分句修正。')
+                        '无法精确对齐：保留候选文字，自动保留原声。')
                 rows.extend(chunk_rows)
                 alignments.append(aligned)
                 checkpoint.save()
@@ -236,12 +263,10 @@ def transcribe(audio, config, work_dir):
             del model
             release()
             model_event(work_dir, '已释放时间对齐模型（Qwen3-ForcedAligner 0.6B）')
+    protect_uncertain_rows(rows)
     for number, row in enumerate(rows,1): row['id']=number
-    fallback = [row['id'] for row in rows if row.get('timing_fallback')]
-    if fallback:
-        model_event(work_dir, 'Qwen 第 '+ '、'.join(map(str, fallback))+
-            ' 句仅保留音频块范围，已舍弃配音并保留原声；请试听后手动分句修正。')
-    uncertain = [row['id'] for row in rows if row.get('timing_uncertain') and not row.get('timing_fallback')]
-    if uncertain:
-        model_event(work_dir, 'Qwen 对齐不确定，请试听第 '+ '、'.join(map(str, uncertain))+' 句。')
+    preserved = [row['id'] for row in rows if row.get('auto_preserve_original')]
+    if preserved:
+        listed = '、'.join(map(str, preserved[:8])) + (' 等' if len(preserved)>8 else '')
+        model_event(work_dir, f'Qwen：{len(preserved)} 句定位存疑，自动保留原声、不配音（第 {listed} 句）。')
     return rows

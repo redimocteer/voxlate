@@ -94,6 +94,20 @@ class QwenResumeTests(unittest.TestCase):
         self.run_asr()
         self.assertEqual(self.asr.transcribe.call_count, 2)
 
+    def test_cached_suspicious_alignment_is_protected_without_loading_models(self):
+        self.aligner.align.return_value = [NS(items=[NS(text='Hello',start_time=0,end_time=8)])]
+        rows = self.run_asr()
+        self.assertTrue(all(not row['enabled'] for row in rows))
+        self.assertTrue(all(row['auto_preserve_original'] for row in rows))
+        files = [self.root/'recognition'/name for name in ('qwen_transcript.json','qwen_alignment.json','qwen_resume.json')]
+        original = [path.read_bytes() for path in files]
+        self.asr_factory.reset_mock()
+        self.align_factory.reset_mock()
+        self.assertEqual(self.run_asr(), rows)
+        self.asr_factory.assert_not_called()
+        self.align_factory.assert_not_called()
+        self.assertEqual([path.read_bytes() for path in files], original)
+
     def test_untimed_block_keeps_text_and_original_audio_without_stopping_later_blocks(self):
         untimed = [NS(items=[NS(text='Hello', start_time=0, end_time=0)])]
         self.aligner.align.side_effect = [untimed, self.aligner.align.return_value]
