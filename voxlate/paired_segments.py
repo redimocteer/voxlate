@@ -2,7 +2,7 @@
 import copy
 
 from .common import VoxlateError
-from .segmentation import MAX_SPAN, MIN_BLOCK, validate_blocks
+from .segmentation import MAX_SPAN, MIN_BLOCK, MAX_FULL_SENTENCES, validate_blocks
 
 COLORS = ('#3466d6', '#008675', '#a45aba', '#bf7026', '#478e36',
           '#c44878', '#547ba0', '#887629', '#775bd3', '#ad5044')
@@ -10,14 +10,17 @@ MAX_CUTS = 20
 
 
 class PairedSegmentPlan:
-    def __init__(self, project, first, last, blocks=None):
+    def __init__(self, project, first, last, blocks=None, *, full=False):
         self.project = project
+        self.full = full
+        self.max_sentences = MAX_FULL_SENTENCES if full else 10
         rows = project['segments']
+        self.original_rows = {(row['start'],row['end']):row for row in rows}
         self.first, self.last = first, last
-        self.start, self.end = self.context(first, last)
-        self.cuts = [float(t) for row in rows[first:last+1] for t in (row['start'], row['end'])]
+        self.start, self.end = (0., project['duration']) if full else self.context(first, last)
+        self.cuts = [] if full else [float(t) for row in rows[first:last+1] for t in (row['start'], row['end'])]
         if blocks is not None:
-            validate_blocks(blocks, project['duration'])
+            validate_blocks(blocks, project['duration'], full=full)
             self.start, self.end = blocks[0]['start'], blocks[-1]['end']
             self.cuts = [float(t) for b in blocks if b['enabled'] or not b.get('omit_row', True) for t in (b['start'], b['end'])]
             touched = [i for i, row in enumerate(rows) if row['end'] > self.start and row['start'] < self.end]
@@ -33,9 +36,9 @@ class PairedSegmentPlan:
         return (left+rows[first]['start'])/2, (rows[last]['end']+right)/2
 
     def check(self):
-        if len(self.cuts) > MAX_CUTS:
-            raise VoxlateError('一次最多编辑 10 句（20 条切线），请缩小选区。')
-        if self.end-self.start > MAX_SPAN:
+        if len(self.cuts) > self.max_sentences*2:
+            raise VoxlateError(f'一次最多编辑 {self.max_sentences} 句，请缩小选区。')
+        if not self.full and self.end-self.start > MAX_SPAN:
             raise VoxlateError('一次最多编辑 10 分钟，请缩小选区。')
 
     @property
@@ -43,7 +46,7 @@ class PairedSegmentPlan:
         return list(zip(self.cuts[::2], self.cuts[1::2]))
 
     def number(self, index):
-        return self.project['segments'][self.first]['id']+index
+        return index+1 if self.full else self.project['segments'][self.first]['id']+index
 
     @property
     def blocks(self):
@@ -53,8 +56,7 @@ class PairedSegmentPlan:
             if start > cursor:
                 blocks.append(dict(start=cursor, end=start, enabled=False, text='', omit_row=True))
             if end > start:
-                original = next((row for row in self.project['segments']
-                                 if abs(row['start']-start) < 1e-6 and abs(row['end']-end) < 1e-6), None)
+                original = self.original_rows.get((start,end))
                 blocks.append(dict(start=start, end=end, enabled=original.get('enabled', True) if original else True,
                                    text='', manual_text=False, omit_row=False))
             cursor = end
@@ -84,8 +86,8 @@ class PairedSegmentPlan:
             self.restore(self.redo_stack.pop())
 
     def split(self, seconds):
-        if len(self.cuts) >= MAX_CUTS:
-            raise VoxlateError('最多 20 条切线，请先删除不需要的切线。')
+        if len(self.cuts) >= self.max_sentences*2:
+            raise VoxlateError(f'最多 {self.max_sentences*2} 条切线，请先删除不需要的切线。')
         seconds = max(self.start, min(self.end, round(seconds, 3)))
         if any(abs(t-seconds) < MIN_BLOCK-1e-6 for t in self.cuts):
             raise VoxlateError('新切线须离已有切线至少 0.1 秒。')
@@ -113,8 +115,8 @@ class PairedSegmentPlan:
                              max(self.start, min(self.end, round(end, 3)))))
         if end-start < MIN_BLOCK-1e-6:
             raise VoxlateError('拖选范围至少 0.1 秒。')
-        if len(self.cuts) >= MAX_CUTS:
-            raise VoxlateError('最多 10 句，请先删除不需要的句子。')
+        if len(self.cuts) >= self.max_sentences*2:
+            raise VoxlateError(f'最多 {self.max_sentences} 句，请先删除不需要的句子。')
         if any(start < hi-1e-6 and end > lo+1e-6 for lo, hi in self.pairs):
             raise VoxlateError('范围与已有句子重叠，请先删除或调整该句。')
         previous = self.snapshot()
@@ -157,4 +159,4 @@ class PairedSegmentPlan:
             raise VoxlateError('最右侧切线尚未配对，请补一条或删除它。')
         if any(end <= start for start, end in self.pairs):
             raise VoxlateError('每句话的结束切线须在开始切线之后。')
-        validate_blocks(self.blocks, self.project['duration'])
+        validate_blocks(self.blocks, self.project['duration'], full=self.full)

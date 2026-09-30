@@ -11,6 +11,7 @@ from .media import check_cancelled
 MIN_BLOCK = .1
 MAX_SPAN = 600
 MAX_BLOCKS = 600
+MAX_FULL_SENTENCES = 5000
 
 
 def interval_blocks(segments, start, end):
@@ -31,9 +32,12 @@ def interval_blocks(segments, start, end):
     return blocks
 
 
-def validate_blocks(blocks, duration):
-    if not blocks or len(blocks) > MAX_BLOCKS:
-        raise VoxlateError(f'一次请编辑 1～{MAX_BLOCKS} 个时间块。')
+def validate_blocks(blocks, duration, *, full=False):
+    limit = MAX_FULL_SENTENCES*2+1 if full else MAX_BLOCKS
+    if not blocks or len(blocks) > limit:
+        raise VoxlateError(f'一次请编辑 1～{limit} 个时间块。')
+    if full and sum(not b.get('omit_row') for b in blocks) > MAX_FULL_SENTENCES:
+        raise VoxlateError(f'全片最多编辑 {MAX_FULL_SENTENCES} 句。')
     previous = blocks[0]['start']
     for block in blocks:
         start, end = block['start'], block['end']
@@ -45,8 +49,10 @@ def validate_blocks(blocks, duration):
             raise VoxlateError('时间块内容无效。')
         if len(block.get('text', '')) > 1200:
             raise VoxlateError('单块原文最多 1200 字，请进一步分句。')
+        if full and not block.get('omit_row') and end-start > MAX_SPAN:
+            raise VoxlateError('单句最多 10 分钟，请把这句再划短一些。')
         previous = end
-    if blocks[-1]['end']-blocks[0]['start'] > MAX_SPAN:
+    if not full and blocks[-1]['end']-blocks[0]['start'] > MAX_SPAN:
         raise VoxlateError('一次最多调整 10 分钟，请分段编辑。')
 
 
@@ -142,9 +148,9 @@ def segmentation_needs_models(project, blocks):
     return any(b['enabled'] and unchanged_segment(project, b) is None for b in blocks)
 
 
-def replace_segments(project, blocks, texts, translations):
+def replace_segments(project, blocks, texts, translations, *, full=False):
     """Renumber display rows while retaining stable voice reference identities."""
-    validate_blocks(blocks, project['duration'])
+    validate_blocks(blocks, project['duration'], full=full)
     if len(texts) != len(blocks) or len(translations) != len(blocks):
         raise VoxlateError('分句结果不完整，未修改项目。')
     start, end = blocks[0]['start'], blocks[-1]['end']
@@ -256,7 +262,7 @@ def recognize_segment(project_path, expected_hash, cfg, start, end, *, use_origi
         return recognized[0].strip()
 
 
-def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original=True, runner=None):
+def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original=True, runner=None, full=False):
     """Generate in a private work directory and commit only a complete result."""
     from .pipeline import VideoDubPipeline, project_lock, elapsed_text
     from .project_storage import validate_project_directory
@@ -272,7 +278,7 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
         from .languages import direction
         if direction(project) != direction(cfg):
             raise VoxlateError('语言方向与项目不同，请重新打开对应项目。')
-        validate_blocks(blocks, project['duration'])
+        validate_blocks(blocks, project['duration'], full=full)
         for folder in (path.parent/'.temp', path.parent/'history'):
             if not folder.resolve().is_relative_to(path.parent.resolve()):
                 raise VoxlateError('项目临时或备份目录指向项目外，请移除目录链接后重试。')
@@ -285,7 +291,7 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
         check_cancelled()
         if len(retained) == len(touched) and all(i in retained or b.get('omit_row') for i, b in enumerate(blocks)):
             try:
-                (path.parent/'.temp'/'segmentation-draft.json').unlink(missing_ok=True)
+                (path.parent/'.temp'/('segmentation-full-draft.json' if full else 'segmentation-draft.json')).unlink(missing_ok=True)
             except OSError:
                 pass
             return dict(reference_changed=False, sentences=sum(b['enabled'] for b in blocks),
@@ -341,7 +347,7 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
                 raise VoxlateError('分块翻译不完整，原项目保留。')
             for index, text in zip(pending, translated):
                 translations[index] = text
-        result, reference_changed = replace_segments(project, blocks, texts, translations)
+        result, reference_changed = replace_segments(project, blocks, texts, translations, full=full)
         if pending:
             result['translation_config_key'] = digest(pipeline.cfg['translator'])
         backup = path.parent/'history'/'manual-segments'/work.name/'project.json'
@@ -363,7 +369,7 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
         message = f"分句完成：{'，'.join(details)} · 耗时 {duration}"
         pipeline.record_elapsed(message)
         try:
-            (path.parent/'.temp'/'segmentation-draft.json').unlink(missing_ok=True)
+            (path.parent/'.temp'/('segmentation-full-draft.json' if full else 'segmentation-draft.json')).unlink(missing_ok=True)
         except OSError:
             pass  # A stale draft is ignored because its project hash no longer matches.
         return dict(reference_changed=reference_changed, sentences=len(active), updated=len(pending), reused=len(retained),

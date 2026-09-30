@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QApplication, QTableWidget, QTableWidgetSelectionR
 
 
 HEADER_HELP = {
-    0: '单击时间或拖选连续几句，再点“手动分句…”。',
+    0: '单击时间或拖选连续几句，再点“手动微调…”。',
     1: '点击原文选取／舍弃此句。Ctrl+单击仅选中文字格，Ctrl+C复制；可拖选多句。',
     2: '双击修改译文并自动保存。选中文字格后Ctrl+C复制；可拖选多句。',
 }

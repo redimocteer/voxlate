@@ -11,6 +11,23 @@ from test_pipeline import TestDirectory, tone
 
 
 class PairPlanTests(unittest.TestCase):
+    def test_full_starts_blank_and_allows_long_video_with_repeated_colors(self):
+        project=fixture()
+        project['duration']=7200
+        plan=PairedSegmentPlan(project,0,2,full=True)
+        self.assertEqual(plan.pairs,[])
+        self.assertEqual((plan.start,plan.end),(0,7200))
+        for index in range(25):
+            plan.add_sentence(index*120+1,index*120+3)
+        plan.validate()
+        self.assertEqual(plan.number(24),25)
+        self.assertEqual(plan.blocks[-1]['end'],7200)
+        self.assertTrue(plan.blocks[-1]['omit_row'])
+        restored=PairedSegmentPlan(project,0,2,plan.blocks,full=True)
+        self.assertEqual(restored.pairs,plan.pairs)
+        project['segments']=[]
+        self.assertEqual(PairedSegmentPlan(project,0,-1,full=True).pairs,[])
+
     def test_range_addition_order_overlap_and_deleting_last_sentence(self):
         plan=PairedSegmentPlan(fixture(),0,1)
         before=plan.snapshot()
@@ -90,6 +107,83 @@ class PairDialogTests(unittest.TestCase):
             self.app.processEvents()
             time.sleep(.01)
         self.assertIsNone(dialog.worker)
+
+    def test_full_navigation_boundary_seek_and_transparent_drag(self):
+        from PySide6.QtCore import Qt,QPoint,QPointF
+        from PySide6.QtGui import QWheelEvent
+        from PySide6.QtTest import QTest
+        from voxlate.segmentation_dialog import SegmentationDialog
+        with TestDirectory() as folder:
+            audio=Path(folder)/'synthetic.wav'
+            tone(audio,1)
+            project=fixture(); project['duration']=3600
+            wave=dict(peaks=[.3]*3600,step=1,start=0,end=3600,duration=3600)
+            dialog=SegmentationDialog(project,0,2,audio,audio,[wave,wave],full=True)
+            try:
+                dialog.show(); self.app.processEvents()
+                self.assertEqual(dialog.plan.pairs,[])
+                self.assertFalse(dialog.apply_button.isEnabled())
+                self.assertTrue(dialog.windowFlags() & Qt.WindowType.WindowMaximizeButtonHint)
+                point=lambda t: QPoint(round(dialog.canvas.x(t)),70)
+                QTest.mousePress(dialog.canvas,Qt.MouseButton.LeftButton,pos=point(2))
+                QTest.mouseMove(dialog.canvas,point(6))
+                # An active range remains translucent even after cut handles were painted.
+                pixel=dialog.canvas.grab().toImage().pixelColor(QPoint(round(dialog.canvas.x(4)),28))
+                self.assertGreater(pixel.red(),120)
+                self.assertGreater(pixel.green(),130)
+                QTest.mouseRelease(dialog.canvas,Qt.MouseButton.LeftButton,pos=point(6))
+                self.assertEqual(len(dialog.plan.pairs),1)
+                self.assertTrue(dialog.apply_button.isEnabled())
+                for cut,target in ((1,7),(0,3)):
+                    dialog.canvas.position=20
+                    QTest.mousePress(dialog.canvas,Qt.MouseButton.LeftButton,pos=point(dialog.plan.cuts[cut]))
+                    QTest.mouseMove(dialog.canvas,point(target))
+                    QTest.mouseRelease(dialog.canvas,Qt.MouseButton.LeftButton,pos=point(target))
+                    self.assertEqual(dialog.canvas.position,dialog.plan.cuts[0])
+                    self.assertAlmostEqual(dialog.plan.cuts[cut],target,delta=.05)
+                before=dialog.plan.snapshot()
+                overview=dialog.overview
+                QTest.mouseClick(overview,Qt.MouseButton.LeftButton,pos=QPoint(round(overview.x(1800)),35))
+                self.assertAlmostEqual(dialog.canvas.left+dialog.canvas.span/2,1800,delta=4)
+                p=QPointF(overview.x(2700),35)
+                wheel=QWheelEvent(p,p,QPoint(),QPoint(0,120),Qt.MouseButton.NoButton,Qt.KeyboardModifier.NoModifier,Qt.ScrollPhase.NoScrollPhase,False)
+                overview.wheelEvent(wheel)
+                self.assertEqual(dialog.canvas.span,24)
+                self.assertTrue(dialog.canvas.left <= 2700 <= dialog.canvas.left+dialog.canvas.span)
+                self.assertEqual(dialog.plan.snapshot(),before)
+                for index in range(1,22):
+                    dialog.plan.add_sentence(index*60,index*60+3)
+                dialog.render()
+                self.assertEqual(dialog.table.rowCount(),22)
+                self.assertIsNotNone(dialog.table.item(21,2))
+                self.assertEqual(dialog.table.item(0,0).foreground().color(),dialog.table.item(10,0).foreground().color())
+                dialog.table_action(21,4)
+                self.assertEqual(dialog.table.rowCount(),21)
+            finally:
+                dialog.reject(); dialog.deleteLater(); self.app.processEvents()
+
+    def test_full_detail_loading_cancels_before_dialog_closes(self):
+        from voxlate.segmentation_dialog import SegmentationDialog
+        from voxlate.media import check_cancelled
+        with TestDirectory() as folder:
+            audio=Path(folder)/'synthetic.wav'; tone(audio,1)
+            project=dict(duration=3600,segments=[])
+            wave=dict(peaks=[.1]*3600,step=1,start=0,end=3600,duration=3600)
+            ready=threading.Event()
+            def load(*args):
+                ready.set()
+                while True:
+                    check_cancelled(); time.sleep(.01)
+            dialog=SegmentationDialog(project,0,-1,audio,audio,[wave,wave],full=True,load_waves=load)
+            dialog.show(); dialog.load_detail()
+            self.assertTrue(ready.wait(2))
+            dialog.reject()
+            deadline=time.monotonic()+5
+            while dialog.detail_worker is not None and time.monotonic()<deadline:
+                self.app.processEvents(); time.sleep(.01)
+            self.assertIsNone(dialog.detail_worker)
+            self.assertFalse(dialog.isVisible())
+            dialog.deleteLater(); self.app.processEvents()
 
     def test_context_button_stays_beside_time_selection_and_tracks_scroll(self):
         from PySide6.QtCore import Qt
