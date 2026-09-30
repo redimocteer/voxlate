@@ -398,6 +398,10 @@ class VideoDubPipeline:
                     s.update(source_lang=self.source_lang, target_lang="zh")
                     segments.append(s)
                     previous = s["end"]
+            from .long_sentences import refine_long_sentences
+            segments, refined = refine_long_sentences(segments)
+            if refined:
+                LOG.info('已细分 %d 句超过 8 秒的长句；无法可靠切分的句子保留。', refined)
             if self.force_recognition:
                 if not segments:
                     raise VoxlateError('没有识别到对白，原项目保留。')
