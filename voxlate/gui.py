@@ -2036,7 +2036,7 @@ class MainWindow(QMainWindow):
         finally:
             self.table.blockSignals(previous)
 
-    def save_translations(self, *, roles=None, assignments=None, roles_initialized=None, automatic_role_count=None):
+    def save_translations(self, *, roles=None, assignments=None, roles_initialized=None, automatic_role_count=None, report_errors=True):
         if not self.project or not self.project_path:
             return True
         try:
@@ -2078,7 +2078,10 @@ class MainWindow(QMainWindow):
             self.refresh_export_state()
             return True
         except (OSError, ValueError, VoxlateError) as exc:
-            QMessageBox.warning(self, "保存失败", str(exc))
+            if report_errors:
+                QMessageBox.warning(self, "保存失败", str(exc))
+            else:
+                self.notify('退出时未能保存项目：' + str(exc))
             return False
 
     def start_pipeline(self, stop_after, *, sentence_ids=None, force_tts=False):
@@ -2220,14 +2223,29 @@ class MainWindow(QMainWindow):
         if self.task:
             QMessageBox.information(self, "任务仍在运行", "请先停止处理，或等待资源检查结束，再关闭窗口。")
             event.ignore()
-        elif self.confirm_discard():
+        else:
+            if self.dirty and not self.save_translations(report_errors=False):
+                # A broken path must not trap the user in the application. Keep a
+                # recovery copy beside the project if that directory still exists.
+                try:
+                    directory = self.project_path.parent.resolve()
+                    root = next((p for p in (directory, *directory.parents)
+                                 if p.name == Path(self.project['input']).name + '.voxlate'), None)
+                    if root is not None and directory.is_dir():
+                        snapshot = copy.deepcopy(self.project)
+                        for row, segment in enumerate(snapshot['segments']):
+                            segment['target_text'] = self.table.item(row, 2).text().strip()
+                            segment['enabled'] = bool(self.table.item(row, 0).data(Qt.ItemDataRole.UserRole))
+                        recovery = directory/'.temp'/('unsaved-edits-' + uuid.uuid4().hex + '.json')
+                        if recovery.resolve().is_relative_to(root):
+                            write_json(recovery, snapshot)
+                except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                    pass
             self.tts_session.close('关闭程序')
             self.stop_sentence_audio()
             for player in list(self.player_windows.values()):
                 player.close()
             event.accept()
-        else:
-            event.ignore()
 
 
 def main(argv=None):
