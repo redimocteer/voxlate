@@ -198,7 +198,7 @@ def transcribe(audio, config, work_dir):
                     check_cancelled()
                     stop = next_chunk_end(source, start, maximum)
                     samples = read(source, start, stop)
-                    progress(f'Qwen 识别第 {len(chunks)+1} 块：{format_timestamp(start/rate)}–{format_timestamp(stop/rate)}')
+                    progress(f'Qwen 识别第 {len(chunks)+1} 块：{format_timestamp(start/rate)} – {format_timestamp(stop/rate)}')
                     try:
                         text, elapsed = recognize_chunk(model, samples, language, timeout)
                         break
@@ -210,7 +210,7 @@ def transcribe(audio, config, work_dir):
                         release()
                 chunks.append(dict(start=start/rate, end=stop/rate, first_frame=start, last_frame=stop, text=text))
                 checkpoint.save()
-                progress(f'Qwen 识别：{stop/rate:.0f}/{total/rate:.0f} 秒（{stop*100/total:.0f}%）· 本块 {elapsed:.1f} 秒')
+                progress(f'Qwen 识别：已到 {format_timestamp(stop/rate)} / {format_timestamp(total/rate)}（{stop*100/total:.0f}%）· 本块耗时 {elapsed:.1f} 秒')
                 start = stop
     finally:
         if model is not None:
@@ -252,7 +252,7 @@ def transcribe(audio, config, work_dir):
                         dict(aligned, error=str(exc)))
                     aligned = dict(chunk=chunk, words=[], timing_fallback=True)
                     chunk_rows = alignment_rows(aligned, config.get('language', 'en'))
-                    model_event(work_dir, f"Qwen 第 {index+1} 块（{format_timestamp(chunk['start'])}–{format_timestamp(chunk['end'])}）"
+                    model_event(work_dir, f"Qwen 第 {index+1} 块（{format_timestamp(chunk['start'])} – {format_timestamp(chunk['end'])}）"
                         '无法精确对齐：保留候选文字，自动保留原声。')
                 rows.extend(chunk_rows)
                 alignments.append(aligned)
@@ -268,6 +268,6 @@ def transcribe(audio, config, work_dir):
     for number, row in enumerate(rows,1): row['id']=number
     preserved = [row['id'] for row in rows if row.get('auto_preserve_original')]
     if preserved:
-        listed = '、'.join(map(str, preserved[:8])) + (' 等' if len(preserved)>8 else '')
-        model_event(work_dir, f'Qwen：{len(preserved)} 句定位存疑，自动保留原声、不配音（第 {listed} 句）。')
+        listed = '、'.join(map(str, preserved[:8])) + (' 句等' if len(preserved)>8 else ' 句')
+        model_event(work_dir, f'Qwen：{len(preserved)} 句定位存疑，自动保留原声、不配音（第 {listed}）。')
     return rows
