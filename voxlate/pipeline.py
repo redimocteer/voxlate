@@ -17,7 +17,7 @@ from .media import Media, build_timeline, check_cancelled, original_audio_interv
 from .runtime import worker_command, spawn_external, external_env
 from .tts import valid_wav
 from .progress import TTSProgress
-from .project_storage import worker_environment
+from .project_storage import worker_environment, relocated_project
 from .dubbing_state import voice_key, sentence_ready, voice_selection, select_voice_version, remember_voice, automatic_reference, reference_input_key, recommended_reference
 from .model_lifecycle import model_name
 from .roles import ensure_roles, validate_roles, reference_segment, apply_automatic_voice_mode
@@ -288,6 +288,7 @@ class VideoDubPipeline:
         self.project = read_json(project_path) if project_path.exists() else {
             "schema_version": 1, "name": "voxlate", "source_lang": self.source_lang, "target_lang": "zh",
             "input_hash": input_key, "input": str(video), "audio_track": selected_track(self.cfg), "stages": {}, "segments": []}
+        self.project = relocated_project(self.project, project_path)
         previous_project = copy.deepcopy(self.project) if self.force_recognition and project_path.exists() else None
         self.defer_project_save = previous_project is not None
         if self.project.get("input_hash") != input_key or self.project.get("schema_version") != 1:
