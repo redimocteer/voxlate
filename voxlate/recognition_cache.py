@@ -2,7 +2,7 @@
 import math
 from pathlib import Path
 
-from .common import digest, file_hash, model_stamp, read_json, write_json
+from .common import digest, file_hash, model_stamp, read_json, write_json, format_timestamp
 
 
 class QwenCheckpoint:
@@ -48,7 +48,7 @@ class QwenCheckpoint:
                 self.chunks, self.alignments = [], []
                 emit('Qwen 缓存不匹配、损坏或缺少校验，本次从头识别。')
         if self.chunks:
-            emit(f"Qwen 续识别：复用 {len(self.chunks)} 块，已到 {self.chunks[-1]['end']:.1f} 秒。")
+            emit(f"Qwen 续识别：复用 {len(self.chunks)} 块，已到 {format_timestamp(self.chunks[-1]['end'])}。")
         emit('Qwen 自动保存续跑进度；从头识别请先停止，再删除当前项目的 recognition 文件夹。')
 
     @staticmethod

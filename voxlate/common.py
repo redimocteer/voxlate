@@ -27,6 +27,15 @@ class VoxlateError(RuntimeError):
     pass
 
 
+def format_timestamp(seconds):
+    """Display a media position with millisecond precision, including long videos."""
+    milliseconds = max(0, round(seconds * 1000))
+    hours, milliseconds = divmod(milliseconds, 3_600_000)
+    minutes, milliseconds = divmod(milliseconds, 60_000)
+    seconds, milliseconds = divmod(milliseconds, 1000)
+    return f'{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}'
+
+
 def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 

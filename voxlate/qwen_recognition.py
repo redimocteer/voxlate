@@ -6,7 +6,7 @@ import re
 import time
 import unicodedata
 from types import SimpleNamespace
-from .common import VoxlateError, write_json
+from .common import VoxlateError, write_json, format_timestamp
 from .media import check_cancelled
 from .model_lifecycle import model_event
 
@@ -170,13 +170,13 @@ def transcribe(audio, config, work_dir):
                     check_cancelled()
                     stop = next_chunk_end(source, start, maximum)
                     samples = read(source, start, stop)
-                    progress(f'Qwen 识别第 {len(chunks)+1} 块：{start/rate:.1f}–{stop/rate:.1f} 秒')
+                    progress(f'Qwen 识别第 {len(chunks)+1} 块：{format_timestamp(start/rate)}–{format_timestamp(stop/rate)}')
                     try:
                         text, elapsed = recognize_chunk(model, samples, language, timeout)
                         break
                     except TimeoutError:
                         if maximum == 3:
-                            raise VoxlateError(f'Qwen 在 {start/rate:.1f} 秒附近仍识别缓慢，已停止；此前进度保留，可续跑或切换识别模型。') from None
+                            raise VoxlateError(f'Qwen 在 {format_timestamp(start/rate)} 附近仍识别缓慢，已停止；此前进度保留，可续跑或切换识别模型。') from None
                         progress('Qwen 本块识别超时，缩短范围重试；不保存未完成文字。')
                     finally:
                         release()
@@ -224,7 +224,7 @@ def transcribe(audio, config, work_dir):
                         dict(aligned, error=str(exc)))
                     aligned = dict(chunk=chunk, words=[], timing_fallback=True)
                     chunk_rows = alignment_rows(aligned, config.get('language', 'en'))
-                    model_event(work_dir, f"Qwen 第 {index+1} 块（{chunk['start']:.1f}–{chunk['end']:.1f} 秒）"
+                    model_event(work_dir, f"Qwen 第 {index+1} 块（{format_timestamp(chunk['start'])}–{format_timestamp(chunk['end'])}）"
                         '无法精确对齐：保留文字和原声，暂不配音，可手动分句修正。')
                 rows.extend(chunk_rows)
                 alignments.append(aligned)
