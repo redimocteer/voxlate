@@ -146,6 +146,35 @@ except ImportError:
 
 @unittest.skipUnless(HAS_QT, "Install requirements-gui.txt for GUI tests")
 class GuiTests(unittest.TestCase):
+    def test_dragging_moved_video_keeps_new_paths_and_allows_editing(self):
+        import shutil
+        from voxlate.common import file_hash
+        from voxlate.project_storage import project_root
+        root = Path(self.directory.name)
+        old = root/'before'/'synthetic.AVI'
+        old.parent.mkdir()
+        old.write_bytes(b'synthetic fixture')
+        self.window.video_selected(old)
+        path = self.window.project_path
+        project = dict(schema_version=1, name='voxlate', input=str(old), input_hash=file_hash(old),
+            duration=2, segments=[dict(id=1, start=0, end=1, source_text='Hello', target_text='你好')])
+        write_json(path, project)
+        new = root/'after 日本' / old.name
+        new.parent.mkdir()
+        old.rename(new)
+        shutil.move(project_root(old), project_root(new))
+        with patch.object(QMessageBox, 'warning') as warning:
+            self.window.video_selected(new)
+            self.assertEqual(self.window.video.text(), str(new))
+            self.assertEqual(self.window.selected_video, str(new))
+            moved_path = project_root(new)/path.parent.name/'project.json'
+            self.assertEqual(self.window.project_path, moved_path)
+            self.assertEqual(self.window.project_hash, digest(read_json(moved_path)))
+            self.window.table.item(0, 2).setText('你好！')
+            self.assertEqual(read_json(moved_path)['segments'][0]['target_text'], '你好！')
+            self.assertEqual(read_json(moved_path)['input'], str(new))
+            warning.assert_not_called()
+
     def test_audio_track_switch_preserves_projects_and_remembers_per_video(self):
         self.track_probe.return_value = [dict(index=0, label='音轨 1 · 英语 · 立体声'),
                                         dict(index=1, label='音轨 2 · 日语 · 5.1')]

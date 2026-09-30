@@ -29,7 +29,7 @@ from .resources import CATALOG, EXTRAS, PURPOSES, configured_paths, extra_resour
 from .translation_models import MODELS, selected_key, select_model
 from .recognition_models import MODELS as ASR_MODELS, selected_key as selected_asr_key, select_model as select_asr_model, required_model
 from .resource_cache import load_resource_cache, save_resource_cache
-from .project_storage import default_project_directory, existing_project_directory, validate_project_directory, project_root, clear_video_project
+from .project_storage import default_project_directory, existing_project_directory, validate_project_directory, project_root, clear_video_project, relocate_saved_project
 from .translation_view import TranslationDelegate, TIMING_ROLE, acceleration, GRADIENT_START
 from .dubbing_state import audio_exists, sentence_ready, dubbing_ready, voice_key, voice_selection, select_voice_version, automatic_reference
 from .tts_session import TTSSession
@@ -1857,6 +1857,8 @@ class MainWindow(QMainWindow):
             recognition = project.get("recognition_model")
             if recognition not in ASR_MODELS and recognition not in (None, "asr_model", 'asr_combined'):
                 raise VoxlateError("此项目使用了不支持的识别模型")
+            project = relocate_saved_project(project, path, expected_hash=original_hash)
+            original_hash = digest(project)
             combined = recognition == 'asr_combined'
             if combined and selected_asr_key(self.cfg) == 'asr_qwen_model':
                 select_asr_model(self.cfg, 'asr_turbo_model', resource_root(self.cfg))
