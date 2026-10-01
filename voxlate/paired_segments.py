@@ -16,6 +16,7 @@ class PairedSegmentPlan:
         self.max_sentences = MAX_FULL_SENTENCES if full else 10
         rows = project['segments']
         self.original_rows = {(row['start'],row['end']):row for row in rows}
+        self.edits = {}
         self.first, self.last = first, last
         self.start, self.end = (0., project['duration']) if full else self.context(first, last)
         selected = rows if full else rows[first:last+1]
@@ -24,6 +25,9 @@ class PairedSegmentPlan:
             validate_blocks(blocks, project['duration'], full=full)
             self.start, self.end = blocks[0]['start'], blocks[-1]['end']
             self.cuts = [float(t) for b in blocks if b['enabled'] or not b.get('omit_row', True) for t in (b['start'], b['end'])]
+            self.edits = {(b['start'],b['end']):{key:b[key] for key in
+                ('text','manual_text','target_text','manual_translation') if key in b}
+                for b in blocks if not b.get('omit_row') and (b.get('manual_text') or b.get('manual_translation'))}
             touched = [i for i, row in enumerate(rows) if row['end'] > self.start and row['start'] < self.end]
             if touched:
                 self.first, self.last = touched[0], touched[-1]
@@ -49,6 +53,40 @@ class PairedSegmentPlan:
     def number(self, index):
         return index+1 if self.full else self.project['segments'][self.first]['id']+index
 
+    def content(self, index):
+        pair = (self.cuts[index*2],self.cuts[index*2+1])
+        original = self.original_rows.get(pair, {})
+        data = dict(text=original.get('source_text',''), target_text=original.get('target_text',''))
+        data.update(self.edits.get(pair, {}))
+        return data
+
+    def edit_text(self, index, field, value):
+        value = value.strip()
+        if len(value) > 1200:
+            raise VoxlateError('每格最多 1200 字。')
+        data = self.content(index)
+        if data[field] == value:
+            return
+        previous = self.snapshot()
+        data[field] = value
+        data['manual_text'] = True
+        if field == 'text':
+            data.update(target_text='',manual_translation=False)
+        else:
+            data['manual_translation'] = bool(value)
+        self.edits[self.pairs[index]] = data
+        self.remember(previous)
+
+    def translated(self, results):
+        previous = self.snapshot()
+        pairs = set(self.pairs)
+        for result in results:
+            pair = (result['start'],result['end'])
+            if pair in pairs and result['text'].strip():
+                self.edits[pair] = dict(text=result['text'], target_text=result['target_text'],
+                    manual_text=True,manual_translation=True)
+        self.remember(previous)
+
     @property
     def blocks(self):
         """Explicit gaps are commit metadata, never numbered project rows."""
@@ -58,18 +96,20 @@ class PairedSegmentPlan:
                 blocks.append(dict(start=cursor, end=start, enabled=False, text='', omit_row=True))
             if end > start:
                 original = self.original_rows.get((start,end))
-                blocks.append(dict(start=start, end=end, enabled=original.get('enabled', True) if original else True,
-                                   text='', manual_text=False, omit_row=False))
+                block = dict(start=start, end=end, enabled=original.get('enabled', True) if original else True,
+                             text='', manual_text=False, omit_row=False)
+                block.update(self.edits.get((start,end), {}))
+                blocks.append(block)
             cursor = end
         if cursor < self.end:
             blocks.append(dict(start=cursor, end=self.end, enabled=False, text='', omit_row=True))
         return blocks
 
     def snapshot(self):
-        return (self.first, self.last, self.start, self.end, self.cuts[:])
+        return (self.first, self.last, self.start, self.end, self.cuts[:], copy.deepcopy(self.edits))
 
     def restore(self, state):
-        self.first, self.last, self.start, self.end, self.cuts = copy.deepcopy(state)
+        self.first, self.last, self.start, self.end, self.cuts, self.edits = copy.deepcopy(state)
 
     def remember(self, previous):
         if previous != self.snapshot():

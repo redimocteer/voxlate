@@ -34,6 +34,21 @@ class PairPlanTests(unittest.TestCase):
         project['segments']=[]
         self.assertEqual(PairedSegmentPlan(project,0,-1,full=True).pairs,[])
 
+    def test_text_edits_translation_draft_and_history_follow_boundaries(self):
+        project=fixture(); plan=PairedSegmentPlan(project,0,2,full=True)
+        before=plan.snapshot()
+        plan.edit_text(0,'text','Revised source.')
+        self.assertEqual(plan.content(0)['target_text'],'')
+        plan.edit_text(0,'target_text','修改的译文')
+        restored=PairedSegmentPlan(project,0,2,plan.blocks,full=True)
+        self.assertEqual(restored.content(0)['target_text'],'修改的译文')
+        plan.undo(); self.assertEqual(plan.content(0)['target_text'],'')
+        plan.undo(); self.assertEqual(plan.snapshot(),before)
+        plan.redo(); plan.redo()
+        previous=plan.snapshot(); plan.move_cut(1,3.2); plan.remember(previous)
+        self.assertEqual(plan.content(0)['text'],'')
+        plan.undo(); self.assertEqual(plan.content(0)['text'],'Revised source.')
+
     def test_range_addition_order_overlap_and_deleting_last_sentence(self):
         plan=PairedSegmentPlan(fixture(),0,1)
         before=plan.snapshot()
@@ -147,16 +162,78 @@ class PairDialogTests(unittest.TestCase):
                 self.assertEqual(len(dialog.plan.pairs),3)
                 before=dialog.plan.snapshot()
                 QTest.keyClick(table,Qt.Key.Key_Right)
-                self.assertEqual(dialog.canvas.left,30)
-                dialog.previous_view.click()
+                self.assertEqual(dialog.canvas.left,24)
+                QTest.keyClick(table,Qt.Key.Key_Left)
                 self.assertEqual(dialog.canvas.left,0)
                 self.assertEqual(dialog.plan.snapshot(),before)
                 p=QPoint(round(dialog.overview.x(5)),35)
+                QTest.mouseMove(dialog.overview,p)
                 self.assertEqual(dialog.overview.cursor().shape(),Qt.CursorShape.OpenHandCursor)
                 QTest.mousePress(dialog.overview,Qt.MouseButton.LeftButton,pos=p)
                 self.assertEqual(dialog.overview.cursor().shape(),Qt.CursorShape.ClosedHandCursor)
                 QTest.mouseRelease(dialog.overview,Qt.MouseButton.LeftButton,pos=p)
                 self.assertEqual(dialog.overview.cursor().shape(),Qt.CursorShape.OpenHandCursor)
+            finally:
+                dialog.reject(); dialog.deleteLater(); self.app.processEvents()
+
+    def test_editor_shortcuts_selection_toggle_text_edit_and_temporary_translation(self):
+        from unittest.mock import Mock
+        from PySide6.QtCore import Qt,QPoint
+        from PySide6.QtWidgets import QLineEdit
+        from PySide6.QtTest import QTest
+        from voxlate.segmentation_dialog import SegmentationDialog
+        with TestDirectory() as folder:
+            audio=Path(folder)/'synthetic.wav'; tone(audio,20)
+            project=fixture()
+            wave=dict(peaks=[.1]*2000,step=.01,start=0,end=20,duration=20)
+            translator=Mock(side_effect=lambda rows,context,original:[dict(r,target_text='临时译文') for r in rows])
+            dialog=SegmentationDialog(project,0,2,audio,audio,[wave,wave],full=True,translate_selection=translator)
+            try:
+                dialog.show(); self.app.processEvents()
+                QTest.mouseClick(dialog.table.viewport(),Qt.MouseButton.RightButton,pos=QPoint(10,10))
+                self.assertFalse(dialog.selected_rows())
+                self.assertFalse(dialog.delete_button.isEnabled())
+                self.assertFalse(dialog.translate_button.isEnabled())
+                QTest.keyClick(dialog.canvas,Qt.Key.Key_A)
+                self.assertTrue(dialog.select_all_button.isChecked())
+                self.assertEqual(dialog.selected_rows(),[0,1,2])
+                dialog.select_all_button.click()
+                self.assertFalse(dialog.selected_rows())
+                self.assertFalse(dialog.select_all_button.isChecked())
+                dialog.select_block(0)
+                point=dialog.table.visualItemRect(dialog.table.item(0,2)).center()
+                QTest.mouseClick(dialog.table.viewport(),Qt.MouseButton.LeftButton,pos=point)
+                deadline=time.monotonic()+1
+                editor=None
+                while time.monotonic()<deadline:
+                    self.app.processEvents()
+                    editor=next((e for e in dialog.table.findChildren(QLineEdit) if e.isVisible()),None)
+                    if editor: break
+                    time.sleep(.01)
+                self.assertIsNotNone(editor)
+                QTest.keyClick(editor,Qt.Key.Key_A,Qt.KeyboardModifier.ControlModifier)
+                QTest.keyClicks(editor,'A D T Z R revised.')
+                self.assertEqual(len(dialog.plan.pairs),3)
+                translator.assert_not_called()
+                self.assertFalse(dialog.pending_play)
+                QTest.keyClick(editor,Qt.Key.Key_Return)
+                self.app.processEvents()
+                self.assertEqual(dialog.plan.content(0)['text'],'A D T Z R revised.')
+                self.assertEqual(dialog.plan.content(0)['target_text'],'')
+                dialog.canvas.setFocus()
+                QTest.keyClick(dialog.canvas,Qt.Key.Key_T)
+                self.wait_job(dialog)
+                self.assertEqual(dialog.plan.content(0)['target_text'],'临时译文')
+                self.assertEqual(project,fixture())
+                QTest.keyClick(dialog.canvas,Qt.Key.Key_Z)
+                self.assertEqual(dialog.plan.content(0)['target_text'],'')
+                for row in range(dialog.table.rowCount()):
+                    for col in range(dialog.table.columnCount()):
+                        self.assertEqual(dialog.table.item(row,col).toolTip(),'')
+                self.assertFalse(hasattr(dialog,'previous_view'))
+                dialog.canvas.span=5
+                QTest.mouseMove(dialog.overview,QPoint(round(dialog.overview.x(15)),35))
+                self.assertEqual(dialog.overview.cursor().shape(),Qt.CursorShape.ArrowCursor)
             finally:
                 dialog.reject(); dialog.deleteLater(); self.app.processEvents()
 
@@ -326,7 +403,7 @@ class PairDialogTests(unittest.TestCase):
             try:
                 dialog.show()
                 self.app.processEvents()
-                self.assertEqual([dialog.table.horizontalHeaderItem(i).text() for i in range(dialog.table.columnCount())],['句号','时间','原文'])
+                self.assertEqual([dialog.table.horizontalHeaderItem(i).text() for i in range(dialog.table.columnCount())],['句号','时间','原文','译文','','',''])
                 self.assertFalse(any(b.text().startswith('切开') for b in dialog.findChildren(QPushButton)))
                 self.assertEqual(dialog.apply_button.toolTip(),'')
                 point=lambda t: QPoint(round(dialog.canvas.x(t)),100)

@@ -49,6 +49,8 @@ def validate_blocks(blocks, duration, *, full=False):
             raise VoxlateError('时间块内容无效。')
         if len(block.get('text', '')) > 1200:
             raise VoxlateError('单块原文最多 1200 字，请进一步分句。')
+        if not isinstance(block.get('target_text',''),str) or len(block.get('target_text','')) > 1200:
+            raise VoxlateError('单块译文最多 1200 字。')
         if full and not block.get('omit_row') and end-start > MAX_SPAN:
             raise VoxlateError('单句最多 10 分钟，请把这句再划短一些。')
         previous = end
@@ -140,12 +142,16 @@ def unchanged_segment(project, block):
                 return None
             if block.get('manual_text') and block.get('text', '').strip() != row['source_text'].strip():
                 return None
+            if block.get('manual_translation') and block.get('target_text','').strip() != row.get('target_text','').strip():
+                return None
             return row
     return None
 
 
 def segmentation_needs_models(project, blocks):
-    return any(b['enabled'] and unchanged_segment(project, b) is None for b in blocks)
+    return any(b['enabled'] and unchanged_segment(project, b) is None and not (
+        b.get('manual_text') and b.get('text','').strip() and
+        b.get('manual_translation') and b.get('target_text','').strip()) for b in blocks)
 
 
 def replace_segments(project, blocks, texts, translations, *, full=False):
@@ -259,6 +265,69 @@ def recognize_segment(project_path, expected_hash, cfg, start, end, *, use_origi
         return recognized[0].strip()
 
 
+def preview_translations(project_path, expected_hash, cfg, sentences, *, context=None,
+                         use_original=True, runner=None, tts_session=None):
+    """Recognize missing text and translate a selection without saving the project."""
+    from .pipeline import VideoDubPipeline, project_lock
+    from .project_storage import validate_project_directory
+    path = Path(project_path)
+    rows = copy.deepcopy(sentences)
+    if not rows or len(rows) > MAX_FULL_SENTENCES:
+        raise VoxlateError('请选择要翻译的句子。')
+    with project_lock(path.parent):
+        project = read_json(path)
+        if digest(project) != expected_hash:
+            raise VoxlateError('项目已变化，请重新打开分句编辑器。')
+        validate_project_directory(project['input'], path.parent)
+        for row in rows:
+            start, end = row['start'], row['end']
+            if (not all(type(t) in (int,float) and math.isfinite(t) for t in (start,end))
+                    or not 0 <= start < end <= project['duration'] or end-start > MAX_SPAN):
+                raise VoxlateError('翻译句子的时间范围无效。')
+            if not isinstance(row.get('text'),str) or len(row['text']) > 1200:
+                raise VoxlateError('单句原文最多 1200 字。')
+        work = path.parent/'.temp'/'manual-preview'/uuid.uuid4().hex
+        if not work.resolve().is_relative_to(path.parent.resolve()):
+            raise VoxlateError('翻译缓存目录指向项目外。')
+        work.mkdir(parents=True)
+        pipeline = VideoDubPipeline(cfg, runner=runner, tts_session=tts_session)
+        pipeline.work, pipeline.project = path.parent, project
+        tracks = pipeline.cached_media() if any(not r['text'].strip() for r in rows) else None
+        pipeline.work = work
+        pipeline.log_directory = path.parent
+        inputs = []
+        for i, row in enumerate(rows):
+            check_cancelled()
+            if not row['text'].strip():
+                clip = work/f'block-{i+1}.wav'
+                pipeline.media.trim(tracks[0 if use_original else 1], clip, row['start'],row['end']-row['start'])
+                inputs.append(dict(index=i,audio=str(clip)))
+        if inputs:
+            recognized = pipeline.runner('asr',dict(manual_blocks=inputs))
+            if not isinstance(recognized,list) or len(recognized)!=len(inputs) or any(not isinstance(t,str) for t in recognized):
+                raise VoxlateError('分块识别结果不完整，编辑内容保留。')
+            for item,text in zip(inputs,recognized):
+                rows[item['index']]['text'] = text.strip()
+        active = [i for i,row in enumerate(rows) if row['text'].strip()]
+        for row in rows:
+            row['target_text'] = ''
+        if active:
+            background = list(context) if context is not None else [row['text'] for row in rows]
+            indices = [rows[i].get('index',i) if context is not None else i for i in active]
+            if any(type(i) is not int or not 0 <= i < len(background) for i in indices):
+                raise VoxlateError('翻译选区无效。')
+            for i,context_index in zip(active,indices):
+                background[context_index] = rows[i]['text']
+            translated = pipeline.runner('translator',dict(texts=[rows[i]['text'] for i in active],context=background,indices=indices))
+            if (not isinstance(translated,list) or len(translated)!=len(active)
+                    or any(not isinstance(t,str) or not t.strip() or len(t)>1200 for t in translated)):
+                raise VoxlateError('翻译结果不完整，编辑内容保留。')
+            for i,text in zip(active,translated):
+                rows[i]['target_text'] = text.strip()
+        check_cancelled()
+        return rows
+
+
 def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original=True, runner=None, full=False):
     """Generate in a private work directory and commit only a complete result."""
     from .pipeline import VideoDubPipeline, project_lock, elapsed_text
@@ -300,6 +369,8 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
         inputs, texts, translations = [], ['']*len(blocks), ['']*len(blocks)
         for index, block in enumerate(blocks):
             check_cancelled()
+            if block.get('manual_translation'):
+                translations[index] = block.get('target_text','').strip()
             if index in retained:
                 texts[index] = retained[index]['source_text']
                 translations[index] = retained[index].get('target_text', '')
@@ -329,7 +400,8 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
                     continue
                 texts[item['index']] = text.strip()
         active = [i for i, b in enumerate(blocks) if b['enabled']]
-        pending = [i for i in active if i not in retained]
+        changed = [i for i in active if i not in retained]
+        pending = [i for i in changed if not translations[i]]
         if pending:
             start, end = blocks[0]['start'], blocks[-1]['end']
             preceding = [s['source_text'] for s in project['segments'] if s['end'] <= start][-2:]
@@ -342,7 +414,7 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
             for index, text in zip(pending, translated):
                 translations[index] = text
         result, reference_changed = replace_segments(project, blocks, texts, translations, full=full)
-        if pending:
+        if changed:
             result['translation_config_key'] = digest(pipeline.cfg['translator'])
         backup = path.parent/'history'/'manual-segments'/work.name/'project.json'
         write_json(backup, project)
@@ -355,7 +427,7 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
         deleted = sum(not any(not b.get('omit_row') and b['start'] < row['end'] and b['end'] > row['start']
                               for b in blocks) for row in touched)
         details = [f'{label} {count} 句' for label, count in
-                   (('保留', len(retained)), ('更新', len(pending)), ('删除', deleted)) if count]
+                   (('保留', len(retained)), ('更新', len(changed)), ('删除', deleted)) if count]
         if skipped:
             details.append(f'{len(skipped)} 段无文字，保留原声')
         elapsed = time.perf_counter()-started
@@ -366,5 +438,5 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
             (path.parent/'.temp'/('segmentation-full-draft.json' if full else 'segmentation-draft.json')).unlink(missing_ok=True)
         except OSError:
             pass  # A stale draft is ignored because its project hash no longer matches.
-        return dict(reference_changed=reference_changed, sentences=len(active), updated=len(pending), reused=len(retained),
+        return dict(reference_changed=reference_changed, sentences=len(active), updated=len(changed), reused=len(retained),
                     removed=len(touched)-len(retained), unchanged=False, skipped=skipped, backup=str(backup), message=message)

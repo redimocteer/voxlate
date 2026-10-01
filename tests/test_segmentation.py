@@ -184,6 +184,43 @@ class CommitTests(unittest.TestCase):
         self.assertEqual(read_json(self.path),self.project)
         runner.assert_not_called()
 
+    def test_editor_translation_is_temporary_and_apply_reuses_it(self):
+        from voxlate.paired_segments import PairedSegmentPlan
+        from voxlate.segmentation import preview_translations, segmentation_needs_models
+        plan=PairedSegmentPlan(self.project,0,1,full=True)
+        rows=[dict(index=0,start=plan.pairs[0][0],end=plan.pairs[0][1],text='Edited source.')]
+        before=self.path.read_bytes()
+        runner=Mock(return_value=['临时译文。'])
+        translated=preview_translations(self.path,digest(self.project),self.integration.cfg,rows,
+            context=['Edited source.','Welcome.'],runner=runner)
+        self.assertEqual(runner.call_args.args[0],'translator')
+        self.assertEqual(self.path.read_bytes(),before)
+        plan.translated(translated)
+        self.assertFalse(segmentation_needs_models(self.project,plan.blocks))
+        fail=Mock(side_effect=AssertionError('completed editor translation must not reload models'))
+        result=apply_segmentation(self.path,digest(self.project),self.integration.cfg,plan.blocks,runner=fail,full=True)
+        current=read_json(self.path)
+        self.assertEqual(current['segments'][0]['source_text'],'Edited source.')
+        self.assertEqual(current['segments'][0]['target_text'],'临时译文。')
+        self.assertEqual(current['segments'][1]['tts_audio'],self.project['segments'][1]['tts_audio'])
+        self.assertEqual(result['updated'],1)
+        fail.assert_not_called()
+
+    def test_preview_recognizes_only_missing_sources_and_never_commits(self):
+        from voxlate.segmentation import preview_translations
+        rows=[dict(start=.2,end=.8,text=''),dict(start=1.6,end=2.4,text='Typed source.')]
+        calls=[]
+        def runner(kind,job):
+            calls.append((kind,job))
+            return ['New speech.'] if kind=='asr' else ['新对白。','手写原文。']
+        before=self.path.read_bytes()
+        result=preview_translations(self.path,digest(self.project),self.integration.cfg,rows,runner=runner)
+        self.assertEqual([c[0] for c in calls],['asr','translator'])
+        self.assertEqual(len(calls[0][1]['manual_blocks']),1)
+        self.assertEqual(result[0]['text'],'New speech.')
+        self.assertEqual(result[1]['target_text'],'手写原文。')
+        self.assertEqual(self.path.read_bytes(),before)
+
     def test_full_manual_on_fresh_separation_can_dub_and_export(self):
         from voxlate.paired_segments import PairedSegmentPlan
         f=self.integration
