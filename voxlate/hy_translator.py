@@ -60,7 +60,8 @@ def parse_translations(output, count):
 
 
 class HyTranslator:
-    def __init__(self, cfg, *, work_dir=None):
+    def __init__(self, cfg, *, work_dir=None, session_cache=None):
+        self.session_cache = session_cache
         self.cfg = cfg
         direction(cfg)
         if work_dir is None:
@@ -113,7 +114,17 @@ class HyTranslator:
                     if offset < len(translated):
                         continue
                     if session is None:
-                        session = stack.enter_context(HySession(self.cfg, self.model, folder, self.work_dir))
+                        if self.session_cache is None:
+                            session = stack.enter_context(HySession(self.cfg, self.model, folder, self.work_dir))
+                        else:
+                            session = self.session_cache.get('translator')
+                            if session is None:
+                                # This directory outlives a single request, inside the video project.
+                                resident_folder = Path(tempfile.mkdtemp(prefix='resident-translate-', dir=temporary_root))
+                                session = HySession(self.cfg, self.model, resident_folder, self.work_dir).__enter__()
+                                self.session_cache['translator'] = session
+                            else:
+                                model_event(self.work_dir, f'复用翻译模型（{model_name("translator", self.cfg)}）')
                     (folder/'prompt.txt').write_text(prompt, encoding='utf-8')
                     (folder/'schema.json').write_text(json.dumps(schema), encoding='utf-8')
                     name = model_name('translator', self.cfg)

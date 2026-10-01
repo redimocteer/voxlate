@@ -1,4 +1,4 @@
-"""Isolated offline workers; GUI TTS can retain its model within one project."""
+"""Isolated offline workers; GUI models can stay loaded within one project."""
 import os
 from pathlib import Path
 import sys
@@ -21,7 +21,7 @@ def main():
         tempfile.tempdir = os.environ['TEMP']
         os.chdir(request.parent)
         if '--serve' in sys.argv[2:]:
-            serve_tts(request)
+            serve_models(request)
         else:
             run_job(request)
     finally:
@@ -31,13 +31,17 @@ def main():
         tempfile.tempdir = previous_temp
 
 
-def serve_tts(request):
+def serve_models(request):
     import queue
     import threading
     import traceback
     from voxlate.common import digest
-    root = request.parent
-    config_key = digest(read_json(request)['config'])
+    first = read_json(request)
+    kind = first['kind']
+    root = Path(first.get('session_root', request.parent)).resolve()
+    if kind not in ('tts', 'translator') or not request.is_relative_to(root):
+        raise ValueError('Invalid resident worker scope')
+    config_key = digest(first['config'])
     jobs = queue.Queue()
     def receive():
         # A blocking CRT stdin read can deadlock NumPy initialization on Windows.
@@ -83,9 +87,22 @@ def serve_tts(request):
     while True:
         try:
             job = read_json(request)
-            if request.parent != root or job['kind'] != 'tts' or digest(job['config']) != config_key:
+            if (not request.is_relative_to(root) or job['kind'] != kind or digest(job['config']) != config_key
+                    or (kind == 'tts' and request.parent != root)):
                 raise ValueError('Resident worker project or settings changed')
-            run_job(request, cache)
+            if kind == 'translator':
+                # Each editor request has its own project-local diagnostics, while
+                # the native model process remains attached to the same worker.
+                from contextlib import redirect_stdout, redirect_stderr
+                with request.with_name('translator.log').open('a', encoding='utf-8') as stream:
+                    with redirect_stdout(stream), redirect_stderr(stream):
+                        try:
+                            run_job(request, cache)
+                        except Exception:
+                            traceback.print_exc()
+                            raise
+            else:
+                run_job(request, cache)
             write_json(request.with_suffix('.done.json'), {'ok': True})
         except Exception:
             traceback.print_exc()
@@ -113,7 +130,7 @@ def run_job(request, engine_cache=None):
             result = transcribe(job["audio"], cfg, work_dir=request.parent)
     elif kind == "translator":
         from voxlate.translator import Translator
-        result = Translator(cfg, work_dir=request.parent).translate_many(
+        result = Translator(cfg, work_dir=request.parent, session_cache=engine_cache).translate_many(
             job["texts"], job.get("context"), job.get("indices"))
     elif kind == "tts":
         from voxlate.tts import TTSEngine, valid_wav

@@ -5,9 +5,9 @@ from PySide6.QtWidgets import QApplication, QTableWidget, QTableWidgetSelectionR
 
 
 HEADER_HELP = {
-    0: '单击时间或拖选连续几句，再点“手动微调…”。',
-    1: '点击原文选取／舍弃此句。Ctrl+单击仅选中文字格，Ctrl+C复制；可拖选多句。',
-    2: '双击修改译文并自动保存。选中文字格后Ctrl+C复制；可拖选多句。',
+    0: '单击时间或拖选连续几句，再点“局部微调…”。',
+    1: '拖选或 Ctrl / Shift 多选，Ctrl+C 复制；最右侧图标控制是否配音。',
+    2: '选中后再点一次修改译文，自动保存；Ctrl+C 复制，右击取消选择。',
 }
 
 
@@ -188,6 +188,16 @@ class SentenceTable(QTableWidget):
         super().keyPressEvent(event)
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            self.clearSelection()
+            self.setCurrentCell(-1, -1)
+            self.time_anchor = self.time_last = None
+            self.selecting_text = False
+            self.text_press_pos = None
+            if self.range_button:
+                self.range_button.hide()
+            event.accept()
+            return
         index = self.indexAt(event.position().toPoint())
         self.selecting_text = False
         self.text_press_pos = None

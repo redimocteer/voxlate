@@ -35,7 +35,7 @@ from .dubbing_state import audio_exists, sentence_ready, dubbing_ready, voice_ke
 from .tts_session import TTSSession
 from .roles import ensure_roles, validate_roles, apply_automatic_voice_mode
 from .role_dialog import RoleDialog
-from .ui_controls import CenteredComboBox
+from .ui_controls import CenteredComboBox, action_icon, action_button, action_cell
 from .sentence_table import SentenceTable
 from .audio_tracks import read_audio_tracks, selected_track, track_suffix
 from .resource_terms_dialog import ResourceTermsDialog
@@ -281,6 +281,7 @@ class MainWindow(QMainWindow):
         self.task = None
         self.model_event.connect(self.notify)
         self.tts_session = TTSSession(self.model_event.emit)
+        self.translation_session = TTSSession(self.model_event.emit, kind='translator')
         self.project = None
         self.project_path = None
         self.project_hash = None
@@ -431,13 +432,12 @@ class MainWindow(QMainWindow):
         voice_row.addWidget(self.role_manager_button)
         self.full_segmentation_button = self.button('手动分句...', self.open_full_segmentation)
         self.full_segmentation_button.setToolTip('分离后可用。带入已有句子边界；尚未识别时从空白开始。')
-        voice_row.addWidget(self.full_segmentation_button)
         voice_row.addStretch()
         self.segmentation_range = None
-        self.manual_segmentation_button = self.button('手动微调...', self.open_selected_segmentation)
+        self.manual_segmentation_button = self.button('局部微调...', self.open_selected_segmentation)
         self.manual_segmentation_button.hide()
-        self.release_model_button = self.button('释放模型', self.release_models)
-        self.release_model_button.setToolTip('释放显存，下次配音需重新加载。')
+        self.release_model_button = self.button('释放模型...', self.release_models)
+        self.release_model_button.setToolTip('查看已加载模型，选择释放；下次使用时重新加载。')
         self.release_model_button.setEnabled(False)
         voice_row.addWidget(self.release_model_button)
         self.model_event.connect(self.refresh_model_button)
@@ -449,10 +449,10 @@ class MainWindow(QMainWindow):
         self.video.setAcceptDrops(False)
         self.video.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self.video.setPlaceholderText("将英文或日文视频拖到窗口，或点击「选择…」")
-        self.table = SentenceTable(0, 6)
+        self.table = SentenceTable(0, 7)
         self.table.set_range_button(self.manual_segmentation_button)
         from .languages import LANGUAGES
-        self.table.setHorizontalHeaderLabels(["时间", "原文", LANGUAGES[self.cfg.get('target_lang', 'zh')]['name'] + "译文", "", "", "角色"])
+        self.table.setHorizontalHeaderLabels(["时间", "原文", "译文", "", "", "角色", ""])
         self.table.timeRangeSelected.connect(self.select_segmentation_range)
         self.table.itemSelectionChanged.connect(self.refresh_segmentation_selection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -462,40 +462,44 @@ class MainWindow(QMainWindow):
         self.table.setColumnWidth(3, 74)
         # Keep text column indices stable; display original-audio controls after the source text.
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(4, 38)
+        self.table.setColumnWidth(4, 72)
         self.table.horizontalHeader().moveSection(4, 2)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(5, 116)
         self.table.horizontalHeader().moveSection(5, 1)
         self.table.setColumnHidden(5, True)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(6, 36)
         self.table.horizontalHeader().setSectionsClickable(False)
         self.table.verticalHeader().setVisible(True)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         for column in (1, 2):
             self.table.setItemDelegateForColumn(column, TranslationDelegate(self.table))
         self.table.itemChanged.connect(self.changed_translation)
-        self.table.cellClicked.connect(self.toggle_sentence)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.SelectedClicked | QTableWidget.EditTrigger.EditKeyPressed)
         self.table_edit_triggers = self.table.editTriggers()
         self.table.setWordWrap(False)
         self.table.verticalHeader().setDefaultSectionSize(36)
         layout.addWidget(self.table, 1)
         actions = QHBoxLayout()
-        self.separate_button = self.button('① 分离', lambda: self.start_pipeline('separate'))
+        self.separate_button = self.button('分离', lambda: self.start_pipeline('separate'))
         self.separate_button.setToolTip('提取所选音轨，分离人声与背景；已有匹配结果时直接复用。')
         actions.addWidget(self.separate_button)
-        self.recognize_button = self.button("② 识别", lambda: self.start_pipeline("recognize"))
+        self.recognize_button = self.button("自动分句", lambda: self.start_pipeline("recognize"))
         self.recognize_button.setToolTip('识别已分离的人声；Qwen 自动续跑。应用自动分句会替换手动分句和译文，需重新配音。')
         actions.addWidget(self.recognize_button)
-        self.translate_button = self.button("③ 翻译", lambda: self.start_pipeline('translate'))
+        actions.addWidget(QLabel("│"))
+        actions.addWidget(self.full_segmentation_button)
+        self.translate_button = self.button("翻译", lambda: self.start_pipeline('translate'))
         self.translate_button.setEnabled(False)
         actions.addWidget(self.translate_button)
-        self.dub_button = self.button("④ 生成配音", lambda: self.start_pipeline('dub'))
+        self.dub_button = self.button("配音", lambda: self.start_pipeline('dub'))
         self.dub_button.setEnabled(False)
         actions.addWidget(self.dub_button)
-        self.export_button = self.button("⑤ 导出视频", lambda: self.start_pipeline('export'))
+        self.export_button = self.button("导出", lambda: self.start_pipeline('export'))
         self.export_button.setEnabled(False)
         actions.addWidget(self.export_button)
-        self.one_click_button = self.button('一键导出', lambda: self.start_pipeline('auto'), primary=True)
+        self.one_click_button = self.button('一键完成', lambda: self.start_pipeline('auto'), primary=True)
         actions.addWidget(self.one_click_button)
         self.cancel_button = self.button("停止", self.cancel_task, lock=False)
         self.cancel_button.setEnabled(False)
@@ -698,7 +702,7 @@ class MainWindow(QMainWindow):
                 self.inspect_after_keys = None
                 self.inspect_after_size_keys = None
                 self.resources_checked(results)
-            self.start_task(action, complete, keep_tts=not bool(affected & {'tts', 'tts_model', 'python', 'python_bin'}),
+            self.start_task(action, complete, keep_tts=not bool(affected & {'tts', 'tts_model', 'python', 'python_bin'}), keep_translation=False,
                             release_reason='删除音色克隆相关资源')
 
     def install_resources(self, selected=None):
@@ -759,7 +763,7 @@ class MainWindow(QMainWindow):
             self.inspect_after_size_keys = None
 
         self.start_task(action, complete, cancellable=True, with_progress=True,
-                        keep_tts=not bool(affected & {'tts', 'tts_model', 'python', 'python_bin'}),
+                        keep_tts=not bool(affected & {'tts', 'tts_model', 'python', 'python_bin'}), keep_translation=False,
                         release_reason='安装音色克隆相关资源')
 
     def notify(self, message):
@@ -817,12 +821,14 @@ class MainWindow(QMainWindow):
         self.progress.setValue(int(self.install_percent))
         self.render_status()
 
-    def start_task(self, action, complete, cancellable=False, with_progress=False, keep_tts=True,
+    def start_task(self, action, complete, cancellable=False, with_progress=False, keep_tts=True, keep_translation=True,
                    release_reason='开始识别翻译，腾出显存'):
         if self.task:
             return
         if not keep_tts:
             self.tts_session.close(release_reason)
+        if not keep_translation:
+            self.translation_session.close(release_reason)
         self.task = TaskThread(action, with_progress=with_progress)
         for widget in self.busy_widgets:
             widget.setEnabled(False)
@@ -1354,7 +1360,7 @@ class MainWindow(QMainWindow):
         project, path, cfg = copy.deepcopy(self.project), self.project_path, copy.deepcopy(self.cfg)
         def action(emit):
             with project_lock(path.parent):
-                pipeline = VideoDubPipeline(cfg, tts_session=self.tts_session)
+                pipeline = VideoDubPipeline(cfg, tts_session=self.tts_session, translation_session=self.translation_session)
                 pipeline.work, pipeline.project = path.parent, project
                 _, vocals, _ = pipeline.cached_media()
                 emit('正在自动分组（CAMPPlus，本地 CPU）…')
@@ -1377,14 +1383,64 @@ class MainWindow(QMainWindow):
         self.refresh_export_state()
 
     def refresh_model_button(self, *_):
-        self.release_model_button.setEnabled(self.task is None and self.tts_session.is_alive)
+        self.release_model_button.setEnabled(self.task is None and (self.tts_session.is_alive or self.translation_session.is_alive))
 
     def release_models(self):
-        if self.task is not None or not self.tts_session.is_alive:
+        if self.task is not None:
             self.refresh_model_button()
             return
-        self.start_task(lambda emit: self.tts_session.close('手动释放'),
-                        lambda result: self.refresh_model_button())
+        dialog = QDialog(self)
+        dialog.setWindowTitle('释放模型')
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel('勾选要释放的模型，下次使用时会重新加载。'))
+        choices = []
+        for session in (self.translation_session, self.tts_session):
+            if session.is_alive:
+                checkbox = QCheckBox(session.name)
+                checkbox.setChecked(True)
+                layout.addWidget(checkbox)
+                choices.append((checkbox, session))
+        if not choices:
+            layout.addWidget(QLabel('当前没有保留的模型。'))
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        confirm = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        confirm.setText('释放所选')
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('取消')
+        def update():
+            confirm.setEnabled(any(box.isChecked() for box, _ in choices))
+        for box, _ in choices:
+            box.toggled.connect(update)
+        update()
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected = [session for box, session in choices if box.isChecked()]
+            self.start_task(lambda emit: [session.close('手动释放') for session in selected],
+                            lambda result: self.refresh_model_button())
+
+    def translate_sentence(self, row):
+        if self.task is not None or not self.project or not 0 <= row < len(self.project['segments']):
+            return
+        if not self.save_translations():
+            return
+        from .segmentation import preview_translations
+        project, path, cfg = copy.deepcopy(self.project), self.project_path, copy.deepcopy(self.cfg)
+        segment = project['segments'][row]
+        sentence = dict(index=row, start=segment['start'], end=segment['end'], text=segment['source_text'])
+        def action(emit):
+            return preview_translations(path, digest(project), cfg, [sentence],
+                context=[s['source_text'] for s in project['segments']],
+                tts_session=self.tts_session, translation_session=self.translation_session)
+        def complete(result):
+            if not result or not result[0]['target_text']:
+                return
+            self.table.blockSignals(True)
+            self.table.item(row,2).setText(result[0]['target_text'])
+            self.table.blockSignals(False)
+            self.dirty = True
+            self.save_translations()
+        self.start_task(action, complete, cancellable=True)
 
     def open_project_folder(self):
         if self.project is not None and self.project_path and self.project_path.is_file():
@@ -1424,7 +1480,7 @@ class MainWindow(QMainWindow):
             self.logs.clear()
             self.install_logs.clear()
             self.notify('项目未完全清空，可重试。' if result else '项目已清空，可重新识别翻译。')
-        self.start_task(action, complete, keep_tts=False, release_reason='清空项目')
+        self.start_task(action, complete, keep_tts=False, keep_translation=False, release_reason='清空项目')
 
     def translation_ready(self, sentence_ids=None):
         if not self.project or not self.project.get("segments"):
@@ -1505,8 +1561,15 @@ class MainWindow(QMainWindow):
         original.play.setIcon(widget.play_icons[0])
         original.play.setAccessibleName('试听本句原人声')
         original.play.clicked.connect(lambda checked=False, r=row: self.play_sentence(r, original=True))
+        original_layout.setSpacing(3)
         original_layout.addWidget(original.play)
+        original.translate = action_button(action_icon('translate'), '翻译本句',
+            lambda checked=False,r=row: self.translate_sentence(r))
+        original_layout.addWidget(original.translate)
         self.table.setCellWidget(row, 4, original)
+        toggle = action_button(action_icon('include'), '舍弃或选取本句',
+            lambda checked=False,r=row: self.toggle_sentence(r,6))
+        self.table.setCellWidget(row,6,action_cell(toggle))
 
     def original_sentence_audio(self, segment):
         clip = segment.get('source_audio')
@@ -1548,6 +1611,12 @@ class MainWindow(QMainWindow):
             widget.play.setToolTip('试听本句配音' if ready else '试听上次配音；当前修改尚未生成')
             original = self.table.cellWidget(row, 4)
             original.play.setEnabled(bool(self.original_sentence_audio(segment)))
+            original.translate.setEnabled(self.task is None and not self.dirty)
+            toggle = self.table.cellWidget(row,6).button
+            toggle.setEnabled(self.task is None)
+            enabled = segment.get('enabled',True)
+            toggle.setIcon(action_icon('include' if enabled else 'exclude'))
+            toggle.setToolTip('舍弃此句，保留原声' if enabled else '选取此句参与配音')
             original.play.setToolTip('试听本句原人声（分离后，无背景混合，原始语速）')
             self.refresh_sentence_play_icons(row)
 
@@ -1675,6 +1744,7 @@ class MainWindow(QMainWindow):
             return
         self.stop_sentence_audio()
         self.tts_session.close('切换语言方向')
+        self.translation_session.close('切换语言方向')
         self.cfg['source_lang'], self.cfg['target_lang'] = selected.split('-')
         try:
             self.save_settings()
@@ -1688,7 +1758,7 @@ class MainWindow(QMainWindow):
         self.project = self.project_hash = None
         self.dirty = False
         self.table.setRowCount(0)
-        self.table.horizontalHeaderItem(2).setText(LANGUAGES[self.cfg['target_lang']]['name'] + '译文')
+        self.table.horizontalHeaderItem(2).setText('译文')
         self.restore_voice_selection()
         self.project_path = self.default_project_path(Path(self.video.text())) if self.video.text().strip() else None
         if self.video.text().strip():
@@ -1743,6 +1813,7 @@ class MainWindow(QMainWindow):
             return
         self.stop_sentence_audio()
         self.tts_session.close('切换音轨')
+        self.translation_session.close('切换音轨')
         self.cfg['audio_track'] = track
         self.project = self.project_hash = None
         self.dirty = False
@@ -1764,6 +1835,7 @@ class MainWindow(QMainWindow):
             return False
         self.stop_sentence_audio()
         self.tts_session.close('切换视频')
+        self.translation_session.close('切换视频')
         video = Path(value).resolve()
         self.selected_video = str(video)
         self.video.setText(str(video))
@@ -1816,6 +1888,7 @@ class MainWindow(QMainWindow):
         if not self.confirm_discard():
             return
         self.tts_session.close('新建项目')
+        self.translation_session.close('新建项目')
         if not self.video.text().strip():
             QMessageBox.information(self, "请选择视频", "先选择视频，再新建处理项目。")
             return
@@ -1846,6 +1919,7 @@ class MainWindow(QMainWindow):
         self.stop_sentence_audio()
         if self.task is None and self.project_path != Path(path):
             self.tts_session.close('切换项目')
+            self.translation_session.close('切换项目')
         try:
             project = read_json(path) if project is None else project
             original_hash = digest(project)
@@ -1881,7 +1955,7 @@ class MainWindow(QMainWindow):
             self.source_language.blockSignals(True)
             self.source_language.setCurrentIndex(self.source_language.findData(direction_id(project)))
             self.source_language.blockSignals(False)
-            self.table.horizontalHeaderItem(2).setText(LANGUAGES[target]['name'] + '译文')
+            self.table.horizontalHeaderItem(2).setText('译文')
             self.project = project
             self.project_path = Path(path)
             self.project_hash = original_hash
@@ -1928,7 +2002,7 @@ class MainWindow(QMainWindow):
         return f"{whole // 3600:02d}:{whole // 60 % 60:02d}:{whole % 60:02d}.{milliseconds:03d}"
 
     def toggle_sentence(self, row, column):
-        if self.task is not None or column != 1 or not self.project:
+        if self.task is not None or column != 6 or not self.project:
             return
         if self.table.selecting_text:
             return
@@ -2009,7 +2083,7 @@ class MainWindow(QMainWindow):
                     return [cached_waveform(track, path.parent, start, end) for track in (original, vocals)]
                 def translate_selection(sentences, context, use_original):
                     return preview_translations(path, expected, cfg, sentences, context=context,
-                        use_original=use_original, tts_session=self.tts_session)
+                        use_original=use_original, tts_session=self.tts_session, translation_session=self.translation_session)
                 dialog = SegmentationDialog(project, first, last, original, vocals, waves,
                     blocks=blocks, volume=player_volume(self.data_dir),
                     load_waves=load_waves, parent=self, full=full, overview_waves=overview,
@@ -2017,6 +2091,7 @@ class MainWindow(QMainWindow):
                 dialog.source.setCurrentIndex(0 if original_selected else 1)
                 dialog.volumeChanged.connect(lambda volume: save_player_volume(self.data_dir, volume))
                 accepted = dialog.exec() == QDialog.DialogCode.Accepted
+                self.refresh_model_button()
                 if not accepted:
                     dialog.deleteLater()
                     return
@@ -2030,7 +2105,8 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, '无法保存草稿', str(exc))
                     return
                 def action(emit):
-                    return apply_segmentation(path, expected, cfg, selected_blocks, use_original=use_original, full=full)
+                    return apply_segmentation(path, expected, cfg, selected_blocks, use_original=use_original, full=full,
+                        tts_session=self.tts_session, translation_session=self.translation_session)
                 def complete(result):
                     self.load_project(path)
                     skipped = len(result.get('skipped', []))
@@ -2058,7 +2134,10 @@ class MainWindow(QMainWindow):
                 item = self.table.item(row, column)
                 if item is not None:
                     item.setForeground(QColor("#23324a" if enabled else "#a0a8b4"))
-                    item.setToolTip(("此句当前选取，点击舍弃" if enabled else "此句当前舍弃，点击选取") if column == 1 else "")
+                    item.setToolTip('')
+                    font = item.font()
+                    font.setItalic(not enabled)
+                    item.setFont(font)
                     if column == 0 and segment:
                         item.setToolTip(f"{self.precise_timestamp(segment['start'])} – {self.precise_timestamp(segment['end'])}")
                         if segment.get('recognition_warning'):
@@ -2216,7 +2295,7 @@ class MainWindow(QMainWindow):
             missing = [r for r in results if not r.ready and r.required and (needed is None or r.key in needed)]
             if missing:
                 return {"resources": results}
-            result = VideoDubPipeline(cfg, tts_session=self.tts_session).process(video, output, work, None, None if stop_after in ('export', 'auto') else stop_after,
+            result = VideoDubPipeline(cfg, tts_session=self.tts_session, translation_session=self.translation_session).process(video, output, work, None, None if stop_after in ('export', 'auto') else stop_after,
                 require_translated=stop_after == 'dub', auto_reference=True, voice_mode=mode, reference_sentence_id=reference_id, export_only=stop_after == 'export',
                 sentence_ids=sentence_ids, force_tts=force_tts, force_translation=force_translation,
                 force_recognition=force_recognition, recognition_only=stop_after == 'recognize',
@@ -2281,6 +2360,7 @@ class MainWindow(QMainWindow):
                 except (OSError, ValueError, KeyError, TypeError, AttributeError):
                     pass
             self.tts_session.close('关闭程序')
+            self.translation_session.close('关闭程序')
             self.stop_sentence_audio()
             for player in list(self.player_windows.values()):
                 player.close()

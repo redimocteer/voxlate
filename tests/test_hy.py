@@ -213,7 +213,7 @@ sock.close()
             self.assertEqual(Path.cwd(), previous_cwd)
             self.assertEqual(tempfile.tempdir, previous_temp)
             self.assertEqual(dict(os.environ), previous_env)
-            translator.assert_called_once_with({}, work_dir=root.resolve())
+            translator.assert_called_once_with({}, work_dir=root.resolve(), session_cache=None)
             self.assertEqual(read_json(result), ['你好'])
 
     def test_translation_parser_preserves_sentence_order_and_rejects_missing_lines(self):

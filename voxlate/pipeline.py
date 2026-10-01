@@ -79,7 +79,7 @@ def validate_segments(segments, duration):
 
 
 class VideoDubPipeline:
-    def __init__(self, config, runner=None, tts_session=None):
+    def __init__(self, config, runner=None, tts_session=None, translation_session=None):
         self.cfg = copy.deepcopy(config)
         self.source_lang, self.target_lang = direction(config)
         self.cfg["asr"]["language"] = self.source_lang
@@ -88,6 +88,7 @@ class VideoDubPipeline:
         self.media = Media(config)
         self.runner = runner or self.run_worker
         self.tts_session = tts_session
+        self.translation_session = translation_session
 
     def run_worker(self, kind, job):
         started = time.perf_counter()
@@ -114,20 +115,24 @@ class VideoDubPipeline:
         result.unlink(missing_ok=True)
         progress_path = self.work / f"{kind}_progress.json"
         progress_path.unlink(missing_ok=True)
-        write_json(request, dict(job, kind=kind, config=config, result=str(result), progress=str(progress_path)))
+        write_json(request, dict(job, kind=kind, config=config, result=str(result), progress=str(progress_path),
+                                session_root=str(getattr(self, 'session_root', self.work))))
         log = self.work / f"{kind}.log"
         total = job.get("total", len(job.get("segments", [])))
         tracker = TTSProgress(progress_path, log, total, total - len(job["segments"])) if kind == "tts" else None
-        resident = kind == 'tts' and self.tts_session is not None
-        if self.tts_session is not None and not resident and kind != 'speakers':
+        session = self.tts_session if kind == 'tts' else self.translation_session if kind == 'translator' else None
+        resident = session is not None
+        if self.tts_session is not None and kind not in ('tts', 'speakers'):
             self.tts_session.close(f'开始{label}，腾出显存')
+        if self.translation_session is not None and kind not in ('translator', 'speakers'):
+            self.translation_session.close(f'开始{label}，腾出显存')
         with log.open("a" if resident else "w", encoding="utf-8") as stream:
             env = worker_environment(self.work, external_env())
             try:
                 check_cancelled()
                 if resident:
-                    process, reused = self.tts_session.submit(self.cfg, request, log)
-                    if reused:
+                    process, reused = session.submit(self.cfg, request, log)
+                    if reused and tracker:
                         tracker.state['phase'] = 'preparing'
                 else:
                     process = spawn_external(worker_command(self.cfg, kind, request), stdout=stream,
@@ -184,14 +189,14 @@ class VideoDubPipeline:
             self.record_elapsed(f'已释放{label}模型（{name}）')
         if code or not result.is_file():
             if resident:
-                self.tts_session.close('配音失败')
+                session.close(f'{label}失败')
             raise VoxlateError(f"{kind} 失败（退出码 {code}），请查看项目中的 {log.name}。已完成结果保留。")
         if tracker:
             update = tracker.snapshot()
             LOG.info(update["detail"], extra={"voxlate_progress": update})
         value = read_json(result)
         if resident:
-            self.record_elapsed(f'音色克隆模型已保留（{name}），整批及单句配音继续复用')
+            self.record_elapsed(f'{label}模型已保留（{name}），后续继续复用')
         label = {"asr": "识别", "translator": "翻译", "separator": "人声分离", "tts": "配音", 'speakers': '角色分组'}[kind]
         self.record_elapsed(f"{label}完成 · 耗时 {elapsed_text(time.perf_counter() - started)}")
         return value
