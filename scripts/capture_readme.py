@@ -5,13 +5,15 @@ from pathlib import Path
 import shutil
 import struct
 import sys
+import time
 import uuid
 import wave
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PySide6.QtGui import QFontDatabase, QIcon
+from PySide6.QtGui import QFontDatabase, QIcon, QImage, QPainter, QColor, QPolygonF
+from PySide6.QtCore import QPointF, QPoint, QRect, Qt
 from PySide6.QtWidgets import QApplication
 from voxlate.common import write_json
 from voxlate.diagnostics import ResourceStatus
@@ -19,6 +21,7 @@ from voxlate.gui import MainWindow, STYLE
 from voxlate.resources import CATALOG
 from voxlate.role_dialog import RoleDialog
 from voxlate.segmentation_dialog import SegmentationDialog, waveform_peaks
+from voxlate.media import run_process
 
 
 LINES = [
@@ -54,7 +57,21 @@ def main():
     def capture(widget, name):
         widget.show()
         app.processEvents()
-        if not widget.grab().save(str(output / name)):
+        screenshot=widget.grab()
+        if isinstance(widget,SegmentationDialog) and widget.video_preview.isVisible():
+            preview=widget.video_preview.video
+            frame=preview.videoSink().videoFrame().toImage()
+            if not frame.isNull():
+                # QWidget.grab omits native GPU surfaces. Render the actual
+                # decoded synthetic frame into its on-screen preview rectangle.
+                bounds=QRect(preview.mapTo(widget,QPoint()),preview.size())
+                size=frame.size().scaled(bounds.size(),Qt.AspectRatioMode.KeepAspectRatio)
+                target=QRect(QPoint(),size); target.moveCenter(bounds.center())
+                painter=QPainter(screenshot)
+                painter.fillRect(bounds,QColor('black'))
+                painter.drawImage(target,frame)
+                painter.end()
+        if not screenshot.save(str(output / name)):
             raise RuntimeError(f'Could not save {name}')
 
     try:
@@ -97,18 +114,41 @@ def main():
                         (math.sin(t * 1500) + .25 * math.sin(t * 2800)))))
                 stream.writeframesraw(b''.join(frames))
         peaks = waveform_peaks(audio)
+        # Simple invented scenery for the silent preview; never use user frames.
+        frame = QImage(640,360,QImage.Format.Format_RGB32)
+        frame.fill(QColor('#bad9ec'))
+        painter = QPainter(frame)
+        painter.setPen(QColor('#f8edbf')); painter.setBrush(QColor('#f8edbf'))
+        painter.drawEllipse(490,35,55,55)
+        for color, points in (
+            ('#80a794',[(0,225),(130,100),(260,220),(430,135),(640,230),(640,360),(0,360)]),
+            ('#557e6a',[(0,285),(180,170),(380,290),(520,210),(640,275),(640,360),(0,360)]),
+            ('#8db8cf',[(320,225),(350,225),(390,280),(500,360),(180,360),(285,280)])):
+            painter.setPen(QColor(color)); painter.setBrush(QColor(color))
+            painter.drawPolygon(QPolygonF([QPointF(x,y) for x,y in points]))
+        painter.end()
+        frame_path=scratch/'synthetic-scene.png'; frame.save(str(frame_path))
+        run_process(['ffmpeg','-v','error','-loop','1','-i',str(frame_path),'-t','42',
+            '-r','5','-c:v','mpeg4','-pix_fmt','yuv420p',project['input']], 'synthetic video preview')
+        def wait_video(dialog):
+            deadline=time.monotonic()+5
+            while not dialog.video_preview.video.videoSink().videoFrame().isValid() and time.monotonic()<deadline:
+                app.processEvents(); time.sleep(.02)
         editor = SegmentationDialog(project, 0, 3, audio, audio, [peaks, peaks], parent=window)
         editor.select_block(1)
+        editor.show(); wait_video(editor)
         capture(editor, 'segmentation.png')
         editor.close()
 
         full_editor = SegmentationDialog(project, 0, len(project['segments'])-1,
             audio, audio, [peaks, peaks], parent=window, full=True)
+        full_editor.plan.delete_sentences(range(len(full_editor.plan.pairs)))
         for start, end in ((1,3.1),(3.8,6.2),(7.8,9.2),(9.5,11),(11.7,14),(15,18),(22,25)):
             full_editor.plan.add_sentence(start,end)
         full_editor.canvas.span=18
         full_editor.render()
         full_editor.select_block(2)
+        full_editor.show(); wait_video(full_editor)
         capture(full_editor, 'segmentation-full.png')
         full_editor.close()
         full_editor.deleteLater()

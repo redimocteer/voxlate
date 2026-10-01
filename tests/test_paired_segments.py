@@ -11,12 +11,18 @@ from test_pipeline import TestDirectory, tone
 
 
 class PairPlanTests(unittest.TestCase):
-    def test_full_starts_blank_and_allows_long_video_with_repeated_colors(self):
+    def test_full_imports_existing_boundaries_and_allows_long_video(self):
         project=fixture()
         project['duration']=7200
         plan=PairedSegmentPlan(project,0,2,full=True)
-        self.assertEqual(plan.pairs,[])
+        self.assertEqual(plan.pairs,[(1,3),(4,7),(9,12)])
         self.assertEqual((plan.start,plan.end),(0,7200))
+        before=plan.snapshot()
+        plan.delete_sentences([0,1,2])
+        self.assertFalse(plan.pairs)
+        plan.undo()
+        self.assertEqual(plan.snapshot(),before)
+        plan.redo()
         for index in range(25):
             plan.add_sentence(index*120+1,index*120+3)
         plan.validate()
@@ -108,6 +114,98 @@ class PairDialogTests(unittest.TestCase):
             time.sleep(.01)
         self.assertIsNone(dialog.worker)
 
+    def test_row_drag_multiselection_batch_delete_undo_and_pan_keys(self):
+        from PySide6.QtCore import Qt,QPoint
+        from PySide6.QtTest import QTest
+        from voxlate.segmentation_dialog import SegmentationDialog
+        with TestDirectory() as folder:
+            audio=Path(folder)/'synthetic.wav'; tone(audio,1)
+            project=fixture(); project['duration']=120
+            wave=dict(peaks=[.1]*120,step=1,start=0,end=120,duration=120)
+            dialog=SegmentationDialog(project,0,2,audio,audio,[wave,wave],full=True)
+            try:
+                dialog.show(); self.app.processEvents()
+                self.assertEqual(dialog.plan.pairs,[(1,3),(4,7),(9,12)])
+                table=dialog.table
+                first=table.visualItemRect(table.item(0,2)).center()
+                last=table.visualItemRect(table.item(1,2)).center()
+                QTest.mousePress(table.viewport(),Qt.MouseButton.LeftButton,pos=first)
+                QTest.mouseMove(table.viewport(),last)
+                QTest.mouseRelease(table.viewport(),Qt.MouseButton.LeftButton,pos=last)
+                self.assertEqual(dialog.selected_rows(),[0,1])
+                self.assertEqual(dialog.canvas.selection,{0,1})
+                dialog.delete_button.click()
+                self.assertEqual(dialog.plan.pairs,[(9,12)])
+                dialog.undo_button.click()
+                self.assertEqual(dialog.plan.pairs,[(1,3),(4,7),(9,12)])
+                QTest.keyClick(table,Qt.Key.Key_A,Qt.KeyboardModifier.ControlModifier)
+                self.assertEqual(dialog.selected_rows(),[0,1,2])
+                QTest.keyClick(table,Qt.Key.Key_Delete)
+                self.assertEqual(dialog.plan.pairs,[])
+                self.assertTrue(dialog.apply_button.isEnabled())
+                QTest.keyClick(table,Qt.Key.Key_Z)
+                self.assertEqual(len(dialog.plan.pairs),3)
+                before=dialog.plan.snapshot()
+                QTest.keyClick(table,Qt.Key.Key_Right)
+                self.assertEqual(dialog.canvas.left,30)
+                dialog.previous_view.click()
+                self.assertEqual(dialog.canvas.left,0)
+                self.assertEqual(dialog.plan.snapshot(),before)
+                p=QPoint(round(dialog.overview.x(5)),35)
+                self.assertEqual(dialog.overview.cursor().shape(),Qt.CursorShape.OpenHandCursor)
+                QTest.mousePress(dialog.overview,Qt.MouseButton.LeftButton,pos=p)
+                self.assertEqual(dialog.overview.cursor().shape(),Qt.CursorShape.ClosedHandCursor)
+                QTest.mouseRelease(dialog.overview,Qt.MouseButton.LeftButton,pos=p)
+                self.assertEqual(dialog.overview.cursor().shape(),Qt.CursorShape.OpenHandCursor)
+            finally:
+                dialog.reject(); dialog.deleteLater(); self.app.processEvents()
+
+    def test_video_preview_frame_seek_mute_and_unload(self):
+        from PySide6.QtMultimedia import QMediaPlayer
+        from voxlate.segmentation_dialog import SegmentationDialog
+        from voxlate.media import run_process
+        with TestDirectory() as folder:
+            root=Path(folder); video=root/'synthetic.mp4'; audio=root/'synthetic.wav'
+            run_process(['ffmpeg','-v','error','-f','lavfi','-i','testsrc2=size=320x180:rate=10',
+                '-t','4','-c:v','mpeg4',str(video)],'synthetic preview fixture')
+            tone(audio,4)
+            project=dict(input=str(video),duration=4,segments=[])
+            wave=dict(peaks=[.1]*400,step=.01,start=0,end=4,duration=4)
+            dialog=SegmentationDialog(project,0,-1,audio,audio,[wave,wave],full=True)
+            try:
+                dialog.show()
+                preview=dialog.video_preview
+                deadline=time.monotonic()+8
+                while not preview.video.videoSink().videoFrame().isValid() and time.monotonic()<deadline:
+                    self.app.processEvents(); time.sleep(.02)
+                self.assertTrue(preview.video.videoSink().videoFrame().isValid())
+                self.assertIsNone(preview.player.audioOutput())
+                dialog.seek(2)
+                self.assertEqual(preview.position,2000)
+                deadline=time.monotonic()+3
+                while abs(preview.player.position()-2000)>100 and time.monotonic()<deadline:
+                    self.app.processEvents(); time.sleep(.02)
+                self.assertAlmostEqual(preview.player.position(),2000,delta=100)
+                dialog.audio.setMuted(True)
+                dialog.seek(.5)
+                dialog.toggle_play()
+                deadline=time.monotonic()+1.2
+                while time.monotonic()<deadline:
+                    self.app.processEvents(); time.sleep(.02)
+                self.assertGreater(dialog.player.position(),1100)
+                self.assertAlmostEqual(preview.player.position(),dialog.player.position(),delta=300)
+                dialog.stop_playback()
+                self.assertNotEqual(preview.player.playbackState(),QMediaPlayer.PlaybackState.PlayingState)
+                dialog.preview_check.setChecked(False)
+                self.assertTrue(preview.player.source().isEmpty())
+                self.assertEqual(preview.player.playbackState(),QMediaPlayer.PlaybackState.StoppedState)
+                dialog.preview_check.setChecked(True)
+                self.assertFalse(preview.player.source().isEmpty())
+            finally:
+                dialog.reject()
+                self.assertTrue(dialog.video_preview.player.source().isEmpty())
+                dialog.deleteLater(); self.app.processEvents()
+
     def test_full_navigation_boundary_seek_and_transparent_drag(self):
         from PySide6.QtCore import Qt,QPoint,QPointF
         from PySide6.QtGui import QWheelEvent
@@ -116,7 +214,7 @@ class PairDialogTests(unittest.TestCase):
         with TestDirectory() as folder:
             audio=Path(folder)/'synthetic.wav'
             tone(audio,1)
-            project=fixture(); project['duration']=3600
+            project=dict(segments=[],duration=3600)
             wave=dict(peaks=[.3]*3600,step=1,start=0,end=3600,duration=3600)
             dialog=SegmentationDialog(project,0,2,audio,audio,[wave,wave],full=True)
             try:
@@ -157,7 +255,7 @@ class PairDialogTests(unittest.TestCase):
                 self.assertEqual(dialog.table.rowCount(),22)
                 self.assertIsNotNone(dialog.table.item(21,2))
                 self.assertEqual(dialog.table.item(0,0).foreground().color(),dialog.table.item(10,0).foreground().color())
-                dialog.table_action(21,4)
+                dialog.delete_sentence(21)
                 self.assertEqual(dialog.table.rowCount(),21)
             finally:
                 dialog.reject(); dialog.deleteLater(); self.app.processEvents()
@@ -228,7 +326,7 @@ class PairDialogTests(unittest.TestCase):
             try:
                 dialog.show()
                 self.app.processEvents()
-                self.assertNotIn('识别',[dialog.table.horizontalHeaderItem(i).text() for i in range(5)])
+                self.assertEqual([dialog.table.horizontalHeaderItem(i).text() for i in range(dialog.table.columnCount())],['句号','时间','原文'])
                 self.assertFalse(any(b.text().startswith('切开') for b in dialog.findChildren(QPushButton)))
                 self.assertEqual(dialog.apply_button.toolTip(),'')
                 point=lambda t: QPoint(round(dialog.canvas.x(t)),100)
@@ -248,12 +346,12 @@ class PairDialogTests(unittest.TestCase):
                 # Pending playback must also be cancellable before media finishes loading.
                 dialog.pending_position=1
                 dialog.preview_row(0)
-                self.assertEqual(dialog.table.cellWidget(0,2).accessibleName(),'停止试听')
+                self.assertEqual(dialog.play.accessibleName(),'停止试听')
                 dialog.preview_row(0)
                 self.assertIsNone(dialog.preview_range)
                 self.assertFalse(dialog.pending_play)
-                self.assertIn('试听第',dialog.table.cellWidget(0,2).accessibleName())
-                dialog.table.cellWidget(0,4).click()
+                self.assertEqual(dialog.play.accessibleName(),'播放或停止')
+                dialog.delete_button.click()
                 self.assertEqual(dialog.plan.pairs,[(4,7)])
                 dialog.delete_sentence(0)
                 self.assertEqual(dialog.table.rowCount(),0)

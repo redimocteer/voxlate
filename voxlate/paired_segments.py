@@ -18,7 +18,8 @@ class PairedSegmentPlan:
         self.original_rows = {(row['start'],row['end']):row for row in rows}
         self.first, self.last = first, last
         self.start, self.end = (0., project['duration']) if full else self.context(first, last)
-        self.cuts = [] if full else [float(t) for row in rows[first:last+1] for t in (row['start'], row['end'])]
+        selected = rows if full else rows[first:last+1]
+        self.cuts = [float(t) for row in selected for t in (row['start'], row['end'])]
         if blocks is not None:
             validate_blocks(blocks, project['duration'], full=full)
             self.start, self.end = blocks[0]['start'], blocks[-1]['end']
@@ -126,10 +127,15 @@ class PairedSegmentPlan:
         return pairs.index((start, end))
 
     def delete_sentence(self, index):
-        if 0 <= index < len(self.pairs):
-            previous = self.snapshot()
-            del self.cuts[index*2:index*2+2]
-            self.remember(previous)
+        self.delete_sentences([index])
+
+    def delete_sentences(self, indices):
+        indices = {i for i in indices if 0 <= i < len(self.pairs)}
+        if not indices:
+            return
+        previous = self.snapshot()
+        self.cuts = [point for i, pair in enumerate(self.pairs) if i not in indices for point in pair]
+        self.remember(previous)
 
     def extend_sentence(self, side):
         if len(self.cuts) % 2:
