@@ -129,6 +129,76 @@ except ImportError:
 
 @unittest.skipUnless(HAS_QT, "Install requirements-gui.txt for GUI tests")
 class GuiTests(unittest.TestCase):
+    def test_release_dialog_allows_choosing_only_translation(self):
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QCheckBox
+        tts=Mock(); tts.poll.return_value=None
+        translation=Mock(); translation.poll.return_value=None
+        self.window.tts_session.process=tts
+        self.window.translation_session.process=translation
+        def choose(dialog):
+            boxes=dialog.findChildren(QCheckBox)
+            self.assertEqual(len(boxes),2)
+            confirm=dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok)
+            for box in boxes: box.setChecked(False)
+            self.assertFalse(confirm.isEnabled())
+            next(box for box in boxes if '翻译' in box.text()).setChecked(True)
+            self.assertTrue(confirm.isEnabled())
+            return QDialog.DialogCode.Accepted
+        with patch.object(QDialog,'exec',new=choose):
+            self.window.release_models()
+        deadline=time.monotonic()+5
+        while self.window.task and time.monotonic()<deadline:
+            self.app.processEvents(); time.sleep(.01)
+        translation.terminate.assert_called_once()
+        tts.terminate.assert_not_called()
+        self.assertTrue(self.window.release_model_button.isEnabled())
+
+    def test_sentence_click_edit_exclusion_and_single_translation(self):
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QLineEdit
+        path = Path(self.directory.name)/'synthetic.mp4.voxlate/project.json'
+        project = dict(schema_version=1, name='voxlate', input=str(Path(self.directory.name)/'synthetic.mp4'), duration=4,
+            segments=[dict(id=1,start=0,end=1,source_text='Hello',target_text='旧译文'),
+                      dict(id=2,start=2,end=3,source_text='Goodbye',target_text='再见')])
+        write_json(path,project)
+        w=self.window; w.load_project(path); w.show(); self.app.processEvents()
+        table=w.table
+        self.assertEqual(table.horizontalHeaderItem(2).text(),'译文')
+        point=table.visualItemRect(table.item(0,1)).center()
+        QTest.mouseClick(table.viewport(),Qt.MouseButton.LeftButton,pos=point)
+        self.assertTrue(table.item(0,0).data(Qt.ItemDataRole.UserRole))
+        QTest.mouseClick(table.viewport(),Qt.MouseButton.RightButton,pos=point)
+        self.assertFalse(table.selectedIndexes())
+        table.cellWidget(0,6).button.click()
+        self.assertFalse(read_json(path)['segments'][0]['enabled'])
+        self.assertTrue(table.item(0,1).font().italic())
+        self.assertTrue(table.item(0,2).font().italic())
+        point=table.visualItemRect(table.item(0,2)).center()
+        QTest.mouseClick(table.viewport(),Qt.MouseButton.LeftButton,pos=point)
+        QTest.mouseClick(table.viewport(),Qt.MouseButton.LeftButton,pos=point)
+        deadline=time.monotonic()+1
+        editor=None
+        while time.monotonic()<deadline:
+            self.app.processEvents()
+            editor=next((e for e in table.findChildren(QLineEdit) if e.isVisible()),None)
+            if editor: break
+            time.sleep(.01)
+        self.assertIsNotNone(editor)
+        QTest.keyClick(editor,Qt.Key.Key_A,Qt.KeyboardModifier.ControlModifier)
+        QTest.keyClicks(editor,'Edited')
+        QTest.keyClick(editor,Qt.Key.Key_Return); self.app.processEvents()
+        self.assertEqual(read_json(path)['segments'][0]['target_text'],'Edited')
+        with patch('voxlate.segmentation.preview_translations',return_value=[dict(target_text='新译文')]) as translate:
+            table.cellWidget(0,4).translate.click()
+            deadline=time.monotonic()+5
+            while w.task and time.monotonic()<deadline:
+                self.app.processEvents(); time.sleep(.01)
+            translate.assert_called_once()
+        saved=read_json(path)
+        self.assertEqual(saved['segments'][0]['target_text'],'新译文')
+        self.assertFalse(saved['segments'][0]['enabled'])
+        self.assertEqual(saved['segments'][1]['target_text'],'再见')
+
     def test_dragging_moved_video_keeps_new_paths_and_allows_editing(self):
         import shutil
         from voxlate.common import file_hash
@@ -413,7 +483,7 @@ class GuiTests(unittest.TestCase):
         window.project['prepared_audio_key']='synthetic-prepared-audio'
         window.refresh_export_state()
         self.assertTrue(window.full_segmentation_button.isEnabled())
-        self.assertIn('手动微调',window.manual_segmentation_button.text())
+        self.assertIn('局部微调',window.manual_segmentation_button.text())
         with patch.object(window,'edit_segmentation') as edit:
             window.full_segmentation_button.click()
             edit.assert_called_once_with(0,-1,full=True)
@@ -772,7 +842,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(table.item(0, 0).toolTip(), '00:00:00.000 – 00:00:01.000')
         self.window.toggle_sentence(0, 0)
         self.assertTrue(table.item(0, 0).data(Qt.ItemDataRole.UserRole))
-        self.window.toggle_sentence(0, 1)
+        self.window.toggle_sentence(0, 6)
         self.assertFalse(self.window.dirty)
         self.assertEqual(table.item(0, 2).foreground().color().name(), "#a0a8b4")
         self.assertTrue(self.window.save_translations())
@@ -786,7 +856,7 @@ class GuiTests(unittest.TestCase):
             self.window.toggle_sentence(0, 0)
             self.assertFalse(table.item(0, 0).data(Qt.ItemDataRole.UserRole))
             self.window.load_project(path)
-            self.window.toggle_sentence(0, 1)
+            self.window.toggle_sentence(0, 6)
             self.assertFalse(table.item(0, 0).data(Qt.ItemDataRole.UserRole))
         finally:
             release.set()
@@ -794,7 +864,7 @@ class GuiTests(unittest.TestCase):
             while self.window.task and time.monotonic() < deadline:
                 self.app.processEvents()
                 time.sleep(0.01)
-        self.window.toggle_sentence(0, 1)
+        self.window.toggle_sentence(0, 6)
         self.assertEqual(table.item(0, 2).foreground().color().name(), "#23324a")
 
     def test_copy_selection_does_not_discard_source_sentence(self):
@@ -838,9 +908,9 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(table.item(0, 2).data(TIMING_ROLE), 3)
         for ratio, width in ((1, 0), (1.2, 0), (1.4, .125), (1.6, .25), (1.8, .375), (2, .5), (12, .5)):
             self.assertAlmostEqual(gradient_fraction(ratio), width)
-        self.window.toggle_sentence(0, 1)
+        self.window.toggle_sentence(0, 6)
         self.assertIsNone(table.item(0, 2).data(TIMING_ROLE))
-        self.window.toggle_sentence(0, 1)
+        self.window.toggle_sentence(0, 6)
         self.assertEqual(table.item(0, 2).data(TIMING_ROLE), 3)
         table.item(0, 2).setText("嗨")
         self.assertIsNone(table.item(0, 2).data(TIMING_ROLE))
@@ -944,12 +1014,14 @@ class GuiTests(unittest.TestCase):
         audio.write_bytes(b'saved synthetic audio')
         button = self.window.release_model_button
         self.assertFalse(button.isEnabled())
-        self.assertEqual(button.toolTip(), '释放显存，下次配音需重新加载。')
+        self.assertEqual(button.toolTip(), '查看已加载模型，选择释放；下次使用时重新加载。')
         process = Mock()
         process.poll.return_value = None
         self.window.tts_session.process = process
         self.window.refresh_model_button()
         self.assertTrue(button.isEnabled())
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self.app.activeModalWidget().accept())
         button.click()
         self.assertFalse(button.isEnabled())
         deadline = time.monotonic()+5
@@ -1311,7 +1383,7 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(hasattr(self.window, 'reference'))
         self.assertEqual(self.window.uniform_voice.text(), '统一音色')
         self.assertEqual(self.window.individual_voice.text(), '逐句音色')
-        for text in ('① 分离', '② 识别', '③ 翻译', '④ 生成配音', '⑤ 导出视频', '一键导出'):
+        for text in ('分离', '自动分句', '手动分句...', '翻译', '配音', '导出', '一键完成'):
             self.assertIn(text, buttons)
         self.assertIn('清空项目', buttons)
 

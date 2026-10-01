@@ -266,7 +266,7 @@ def recognize_segment(project_path, expected_hash, cfg, start, end, *, use_origi
 
 
 def preview_translations(project_path, expected_hash, cfg, sentences, *, context=None,
-                         use_original=True, runner=None, tts_session=None):
+                         use_original=True, runner=None, tts_session=None, translation_session=None):
     """Recognize missing text and translate a selection without saving the project."""
     from .pipeline import VideoDubPipeline, project_lock
     from .project_storage import validate_project_directory
@@ -290,7 +290,8 @@ def preview_translations(project_path, expected_hash, cfg, sentences, *, context
         if not work.resolve().is_relative_to(path.parent.resolve()):
             raise VoxlateError('翻译缓存目录指向项目外。')
         work.mkdir(parents=True)
-        pipeline = VideoDubPipeline(cfg, runner=runner, tts_session=tts_session)
+        pipeline = VideoDubPipeline(cfg, runner=runner, tts_session=tts_session, translation_session=translation_session)
+        pipeline.session_root = path.parent
         pipeline.work, pipeline.project = path.parent, project
         tracks = pipeline.cached_media() if any(not r['text'].strip() for r in rows) else None
         pipeline.work = work
@@ -328,7 +329,8 @@ def preview_translations(project_path, expected_hash, cfg, sentences, *, context
         return rows
 
 
-def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original=True, runner=None, full=False):
+def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original=True, runner=None, full=False,
+                       tts_session=None, translation_session=None):
     """Generate in a private work directory and commit only a complete result."""
     from .pipeline import VideoDubPipeline, project_lock, elapsed_text
     from .project_storage import validate_project_directory
@@ -359,7 +361,8 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
                 pass
             return dict(reference_changed=False, sentences=sum(b['enabled'] for b in blocks),
                         updated=0, reused=len(retained), removed=0, unchanged=True, skipped=[], backup=None)
-        pipeline = VideoDubPipeline(cfg, runner=runner)
+        pipeline = VideoDubPipeline(cfg, runner=runner, tts_session=tts_session, translation_session=translation_session)
+        pipeline.session_root = path.parent
         pipeline.work, pipeline.project = path.parent, project
         pipeline.log_directory = path.parent
         tracks = None

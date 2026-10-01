@@ -4,11 +4,11 @@ from .common import VoxlateError
 
 
 class Translator:
-    def __init__(self, config, *, work_dir=None):
+    def __init__(self, config, *, work_dir=None, session_cache=None):
         self.native = None
         if config.get("model_type", "").startswith("hy_mt2"):
             from .hy_translator import HyTranslator
-            self.native = HyTranslator(config, work_dir=work_dir)
+            self.native = HyTranslator(config, work_dir=work_dir, session_cache=session_cache)
             self.source_lang = config.get("source_lang", "en")
             return
         import ctranslate2

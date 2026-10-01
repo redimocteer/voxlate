@@ -16,6 +16,7 @@ from .media import check_cancelled
 from .player import ClickSlider, playback_icon
 from .paired_segments import PairedSegmentPlan, COLORS
 from .segmentation import segmentation_needs_models
+from .ui_controls import action_icon, action_button, action_cell
 
 
 def editor_stop_icon():
@@ -23,20 +24,6 @@ def editor_stop_icon():
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.fillRect(6, 6, 12, 12, QColor('#385dce'))
-    painter.end()
-    return QIcon(pixmap)
-
-
-def action_icon(kind):
-    pixmap=QPixmap(24,24); pixmap.fill(Qt.GlobalColor.transparent)
-    painter=QPainter(pixmap)
-    painter.setPen(QPen(QColor('#526885'),1.7))
-    if kind == 'delete':
-        for a,b,c,d in ((5,7,19,7),(9,4,15,4),(7,8,8,20),(17,8,16,20),(8,20,16,20),(10,10,10,17),(14,10,14,17)):
-            painter.drawLine(a,b,c,d)
-    else:
-        painter.drawText(QRectF(0,0,15,18),Qt.AlignmentFlag.AlignCenter,'文')
-        painter.drawText(QRectF(10,8,14,16),Qt.AlignmentFlag.AlignCenter,'A')
     painter.end()
     return QIcon(pixmap)
 
@@ -390,7 +377,7 @@ class SegmentationDialog(QDialog):
         self.wave_loader = load_waves
         self.translator = translate_selection
         self.worker = None
-        self.setWindowTitle(('手动分句 · 全片' if full else '手动微调') + (' · 已恢复草稿' if blocks else ''))
+        self.setWindowTitle(('手动分句 · 全片' if full else '局部微调') + (' · 已恢复草稿' if blocks else ''))
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
         self.resize(1120, 680)
         self.setMinimumSize(1040, 560)
@@ -480,7 +467,9 @@ class SegmentationDialog(QDialog):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         for column in (4,5,6):
             header.setSectionResizeMode(column,QHeaderView.ResizeMode.Fixed)
-            self.table.setColumnWidth(column,30)
+            self.table.setColumnWidth(column,36)
+        header.moveSection(header.visualIndex(4), 3)
+        header.moveSection(header.visualIndex(5), 4)
         self.table.setItemDelegate(SentenceTextDelegate(self.table))
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked | QAbstractItemView.EditTrigger.EditKeyPressed)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -562,6 +551,11 @@ class SegmentationDialog(QDialog):
         if signature != self.rendered_cuts:
             self.rendered_cuts = signature
             self.table.blockSignals(True)
+            for row in range(self.table.rowCount()):
+                for col in (4,5,6):
+                    if (cell := self.table.cellWidget(row,col)) is not None:
+                        cell.hide()
+                        self.table.removeCellWidget(row,col)
             self.table.setRowCount(len(self.plan.pairs))
             for index, (start, end) in enumerate(self.plan.pairs):
                 content = self.plan.content(index)
@@ -577,10 +571,11 @@ class SegmentationDialog(QDialog):
                 for col,icon in ((4,self.play_icon),(5,self.translate_icon),(6,self.delete_icon)):
                     item=QTableWidgetItem()
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    item.setIcon(icon)
-                    if col == 5 and self.translator is None:
-                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
                     self.table.setItem(index,col,item)
+                    button = action_button(icon, {4:'播放',5:'翻译',6:'删除'}[col],
+                        lambda checked=False,r=index,c=col: self.row_action(r,c))
+                    button.setEnabled(col != 5 or self.translator is not None)
+                    self.table.setCellWidget(index,col,action_cell(button))
                 self.table.setRowHeight(index, 35)
             self.table.blockSignals(False)
             self.select_block(self.current)
@@ -872,8 +867,8 @@ class SegmentationDialog(QDialog):
         self.play.setAccessibleName('停止试听' if active else '播放或停止')
         if hasattr(self,'table'):
             for row,pair in enumerate(self.plan.pairs):
-                if (item:=self.table.item(row,4)) is not None:
-                    item.setIcon(self.stop_icon if active and self.preview_range==pair else self.play_icon)
+                if (cell:=self.table.cellWidget(row,4)) is not None:
+                    cell.button.setIcon(self.stop_icon if active and self.preview_range==pair else self.play_icon)
         self.sync_video(force=True)
 
     def stop_playback(self):
