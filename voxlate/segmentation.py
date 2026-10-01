@@ -191,6 +191,8 @@ def replace_segments(project, blocks, texts, translations, *, full=False):
         if exact:
             row['voice_identity'] = exact.get('voice_identity', exact['id'])
             row['_old_id'] = exact['id']
+            if exact.get('voice_reference_sentence_id') is not None:
+                row['voice_reference_sentence_id'] = exact['voice_reference_sentence_id']
         roles = {s.get('role_id') for s in neighbors if s.get('role_id')}
         if default_role:
             row['role_id'] = next(iter(roles)) if len(roles) == 1 else default_role
@@ -205,6 +207,14 @@ def replace_segments(project, blocks, texts, translations, *, full=False):
             mapping[old_id] = number
         row['id'] = number
     reference_changed = False
+    for row in result['segments']:
+        old_id = row.get('voice_reference_sentence_id')
+        if old_id is not None:
+            if old_id in mapping:
+                row['voice_reference_sentence_id'] = mapping[old_id]
+            else:
+                row.pop('voice_reference_sentence_id')
+                reference_changed = True
     for role in result.get('roles', []):
         old_id = role.get('reference_sentence_id')
         if old_id is not None:

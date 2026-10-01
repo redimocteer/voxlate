@@ -288,6 +288,7 @@ class VideoDubPipeline:
                 self.record_elapsed(f"{label}{outcome} · 总耗时 {elapsed_text(time.perf_counter() - started)}")
 
     def _process(self, video, output, speaker_ref, stop_after):
+        LOG.info('正在核对视频…')
         input_key = file_hash(video)
         project_path = self.work / "project.json"
         self.project = read_json(project_path) if project_path.exists() else {
@@ -573,6 +574,8 @@ class VideoDubPipeline:
         return audio, vocals, background
 
     def generate_existing(self, video, output, speaker_ref):
+        if self.translation_session is not None:
+            self.translation_session.close('开始配音，腾出显存')
         segments = self.project.get('segments', [])
         if not segments:
             raise VoxlateError('请先完成识别翻译')
@@ -626,7 +629,8 @@ class VideoDubPipeline:
         if active:
             stamps["tts"] = digest(CACHE_VERSION, cfg["tts"], model_stamp(cfg["tts"]["model_path"]),
                                    file_hash(Path(cfg["tts"]["repo_path"]) / "indextts" / "infer_v2_5.py"))
-        if active and self.project.get('voice_mode') == 'uniform' and automatic_reference(self.project):
+        mode_chosen = [s for s in chosen if s.get('voice_reference_sentence_id') is None]
+        if mode_chosen and self.project.get('voice_mode') == 'uniform' and automatic_reference(self.project):
             result = self.analyze_reference_voices(vocals)
             self.project['reference_recommendation'] = recommended_reference(self.project, result['recommended_sentence_id'])
             if apply_automatic_voice_mode(self.project, len(result['roles'])):
@@ -645,30 +649,30 @@ class VideoDubPipeline:
             self.project['reference_sentence_id'] = None if automatic_reference(self.project) else ident
         reference = None
         role_references = {}
-        if active and sentence_voice and mode == 'roles':
-            for role_id in {s['role_id'] for s in chosen}:
+        if mode_chosen and sentence_voice and mode == 'roles':
+            for role_id in {s['role_id'] for s in mode_chosen}:
                 best = reference_segment(self.project, role_id)
                 key = digest(sep_key, best['start'], min(15, best['end']-best['start']), self.media.sample_rate)
                 path = self.work/'segments'/f'role_reference_{key}.wav'
                 if not valid_wav(path):
                     self.media.trim(vocals, path, best['start'], min(15, best['end']-best['start']))
                 role_references[role_id] = path
-        elif active and sentence_voice and mode == 'individual':
+        elif mode_chosen and sentence_voice and mode == 'individual':
             pass  # Each segment supplies its own original voice below.
-        elif active and sentence_voice:
+        elif mode_chosen and sentence_voice:
             best = next(s for s in segments if s['id'] == ident)
             reference = self.work / 'speaker_A.wav'
             ref_start, ref_duration = best['start'], min(15, best['end']-best['start'])
             self.stage('reference', digest(sep_key, ref_start, ref_duration, self.media.sample_rate), [reference],
                        lambda: self.media.trim(vocals, reference, ref_start, ref_duration))
-        elif active and speaker_ref:
+        elif mode_chosen and speaker_ref:
             reference = Path(speaker_ref).resolve()
             if not reference.is_file():
                 raise VoxlateError("参考音频不存在")
             ref_duration = self.media.duration(reference)
             if ref_duration < 3 or ref_duration > 15:
                 LOG.warning("建议使用 5–15 秒干净参考音频，当前 %.1f 秒", ref_duration)
-        elif active:
+        elif mode_chosen:
             # Longest recognized single-speaker utterance; capped at 10 s.
             best = max(segments, key=lambda s: s["end"] - s["start"])
             ref_start, ref_duration = (selected[0], selected[1] - selected[0]) if selected else (
@@ -680,12 +684,16 @@ class VideoDubPipeline:
                 LOG.warning("自动参考仅 %.1f 秒；可用 --speaker-ref 指定更清晰的长片段", ref_duration)
         cache = self.work / "segments"
         cache.mkdir(exist_ok=True)
-        for segment in segments:
+        preparing = segments if self.sentence_ids is None else chosen
+        LOG.info('正在准备配音片段：%d 句…', len(preparing))
+        for index, segment in enumerate(preparing, 1):
             check_cancelled()
             clip_key = digest(sep_key, segment["start"], segment["end"], self.media.sample_rate)
             clip = cache / f"source_{segment['id']}_{clip_key[:16]}.wav"
             if not valid_wav(clip):
                 self.media.trim(vocals, clip, segment["start"], segment["end"] - segment["start"])
+            if index == 1 or index % 10 == 0 or index == len(preparing):
+                LOG.info('准备配音片段：%d/%d 句', index, len(preparing))
             segment.update(source_audio=str(clip), target_duration=segment["end"] - segment["start"])
             if not segment.get("enabled", True):
                 # Keep the original voice in unchecked intervals, along with the background.
@@ -697,8 +705,16 @@ class VideoDubPipeline:
             remember_voice(segment)
             if self.force_tts:
                 segment['tts_take'] = uuid.uuid4().hex
-            local_reference = role_references[segment['role_id']] if mode == 'roles' else (
-                clip if sentence_voice and mode == 'individual' else reference)
+            reference_id = segment.get('voice_reference_sentence_id')
+            if reference_id is not None:
+                best = next(s for s in segments if s['id'] == reference_id)
+                key = digest(sep_key, best['start'], min(15, best['end']-best['start']), self.media.sample_rate)
+                local_reference = cache / f'sentence_reference_{key}.wav'
+                if not valid_wav(local_reference):
+                    self.media.trim(vocals, local_reference, best['start'], min(15, best['end']-best['start']))
+            else:
+                local_reference = role_references[segment['role_id']] if mode == 'roles' else (
+                    clip if sentence_voice and mode == 'individual' else reference)
             segment['speaker_reference_audio'] = str(local_reference)
             local_ref_key = file_hash(local_reference)
             tts_key = digest(segment["target_text"], local_ref_key, stamps["tts"],

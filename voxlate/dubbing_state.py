@@ -40,6 +40,14 @@ def voice_selection(project):
 
 
 def voice_key(project, cfg, segment=None):
+    reference_id = (segment or {}).get('voice_reference_sentence_id')
+    if reference_id is not None:
+        selected = next((s for s in project.get('segments', []) if s['id'] == reference_id), None)
+        if selected is None:
+            from .common import VoxlateError
+            raise VoxlateError('单句音色参考不存在，请重新选择参考句。')
+        return digest(cfg['tts'], 'sentence-reference', selected.get('voice_identity', selected['id']),
+                      selected['start'], selected['end'])
     if 'voice_mode' in project:
         mode, ident = voice_selection(project)
         if mode == 'roles':
@@ -84,10 +92,27 @@ def remember_voice(segment):
             field: segment[field] for field in VOICE_FIELDS if field in segment}
 
 
+def voice_contexts(project, cfg):
+    """Resolve shared voice references once, rather than scanning rows per cell."""
+    rows = project.get('segments', [])
+    if not rows:
+        return {}
+    cache, result = {}, {}
+    for row in rows:
+        reference_id = row.get('voice_reference_sentence_id')
+        group = ('sentence', reference_id) if reference_id is not None else (
+            'mode', row.get('role_id') if project.get('voice_mode') == 'roles' else None)
+        if group not in cache:
+            cache[group] = voice_key(project,cfg,row)
+        result[row['id']] = cache[group]
+    return result
+
+
 def select_voice_version(project, cfg):
     """Switch active pointers without deleting another voice's audio files."""
+    contexts = voice_contexts(project,cfg)
     for segment in project.get('segments', []):
-        context = voice_key(project, cfg, segment)
+        context = contexts[segment['id']]
         remember_voice(segment)
         if segment.get('voice_key') == context:
             continue
@@ -110,4 +135,5 @@ def sentence_ready(segment, context):
 def dubbing_ready(project, cfg):
     if not project or not project.get('segments'):
         return False
-    return all(sentence_ready(s, voice_key(project, cfg, s)) for s in project['segments'] if s.get('enabled', True))
+    contexts = voice_contexts(project,cfg)
+    return all(sentence_ready(s, contexts[s['id']]) for s in project['segments'] if s.get('enabled', True))

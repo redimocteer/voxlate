@@ -23,6 +23,22 @@ def fixture():
 
 
 class PlanTests(unittest.TestCase):
+    def test_single_voice_reference_tracks_renumbering_and_deleted_reference(self):
+        project = fixture()
+        project['voice_mode'] = 'individual'
+        project['segments'][1]['voice_reference_sentence_id'] = 3
+        cfg = {'tts':{}}
+        key = voice_key(project,cfg,project['segments'][1])
+        plan = SegmentPlan(project,0,0)
+        plan.split(2)
+        current, changed = replace_segments(project,plan.blocks,['One','Two'],['一','二'])
+        self.assertFalse(changed)
+        self.assertEqual(current['segments'][2]['voice_reference_sentence_id'],4)
+        self.assertEqual(voice_key(current,cfg,current['segments'][2]),key)
+        deleted, changed = replace_segments(current,[dict(start=9,end=12,enabled=False,omit_row=True)],[''],[''])
+        self.assertTrue(changed)
+        self.assertNotIn('voice_reference_sentence_id',deleted['segments'][2])
+
     def test_gaps_remain_in_timeline_and_history_restores_cuts(self):
         project = fixture()
         plan = SegmentPlan(project, 0, 1)

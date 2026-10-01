@@ -11,6 +11,12 @@ from test_pipeline import TestDirectory, tone
 
 
 class PairPlanTests(unittest.TestCase):
+    def test_compact_times_preserve_milliseconds_and_minute_boundaries(self):
+        from voxlate.segmentation_dialog import range_text
+        self.assertEqual(range_text(1.952,3.04), '00:00:01.952 - 03:040')
+        self.assertEqual(range_text(59.952,61.04), '00:00:59.952 - 00:01:01.040')
+        self.assertEqual(range_text(3599.952,3601.04), '00:59:59.952 - 01:00:01.040')
+
     def test_full_imports_existing_boundaries_and_allows_long_video(self):
         project=fixture()
         project['duration']=7200

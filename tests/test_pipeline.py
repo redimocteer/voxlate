@@ -599,6 +599,44 @@ class PipelineIntegration(unittest.TestCase):
         self.run_pipeline(export_only=True)
         self.assertTrue(self.output.exists())
 
+    def test_first_single_sentence_dub_prepares_only_chosen_audio(self):
+        self.run_pipeline(stop_after='translate', voice_mode='individual')
+        path = self.work/'project.json'
+        untouched = read_json(path)['segments'][1]
+        pipeline = VideoDubPipeline(self.cfg, self.runner)
+        with patch.object(pipeline.media, 'trim', wraps=pipeline.media.trim) as trim:
+            pipeline.process(self.video, self.output, self.work, stop_after='dub',
+                             require_translated=True, sentence_ids=[1], force_tts=True)
+        source_clips = [call for call in trim.call_args_list if Path(call.args[1]).name.startswith('source_')]
+        self.assertEqual(len(source_clips), 1)
+        self.assertTrue(Path(source_clips[0].args[1]).name.startswith('source_1_'))
+        self.assertEqual(self.tts_ids, [1])
+        self.assertEqual(read_json(path)['segments'][1], untouched)
+        self.assertEqual(len(list((self.work/'segments').glob('source_*.wav'))), 1)
+        with self.assertRaisesRegex(VoxlateError, '需要生成配音：2'):
+            self.run_pipeline(export_only=True)
+        self.assertFalse(self.output.exists())
+
+    def test_single_sentence_can_borrow_another_original_voice(self):
+        self.run_pipeline(stop_after='translate', voice_mode='uniform')
+        path = self.work/'project.json'
+        project = read_json(path)
+        project['segments'][0]['voice_reference_sentence_id'] = 2
+        untouched = project['segments'][1].copy()
+        write_json(path,project)
+        pipeline = VideoDubPipeline(self.cfg,self.runner)
+        with patch.object(pipeline,'analyze_reference_voices') as analyze, patch.object(pipeline.media,'trim',wraps=pipeline.media.trim) as trim:
+            pipeline.process(self.video,self.output,self.work,stop_after='dub',require_translated=True,sentence_ids=[1])
+            analyze.assert_not_called()
+        references = [c for c in trim.call_args_list if Path(c.args[1]).name.startswith('sentence_reference_')]
+        self.assertEqual(len(references),1)
+        self.assertAlmostEqual(references[0].args[2],untouched['start'])
+        self.assertAlmostEqual(references[0].args[3],untouched['end']-untouched['start'])
+        current = read_json(path)
+        self.assertEqual(current['segments'][0]['speaker_reference_audio'],str(references[0].args[1]))
+        self.assertEqual(current['segments'][1],untouched)
+        self.assertEqual(self.tts_ids,[1])
+
     def test_export_after_disabling_sentence_keeps_absolute_timeline(self):
         self.run_pipeline(stop_after='translate')
         self.run_pipeline(stop_after='dub', require_translated=True)
