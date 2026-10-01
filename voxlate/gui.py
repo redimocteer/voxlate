@@ -426,7 +426,7 @@ class MainWindow(QMainWindow):
         self.role_manager_button = self.button('角色管理…', self.manage_roles)
         voice_row.addWidget(self.role_manager_button)
         self.full_segmentation_button = self.button('手动分句...', self.open_full_segmentation)
-        self.full_segmentation_button.setToolTip('分离后可用。从空白时间轴手动划分全片；应用时替换原分句并备份。')
+        self.full_segmentation_button.setToolTip('分离后可用。带入已有句子边界；尚未识别时从空白开始，应用前自动备份。')
         voice_row.addWidget(self.full_segmentation_button)
         voice_row.addStretch()
         self.segmentation_range = None

@@ -161,7 +161,8 @@ class CommitTests(unittest.TestCase):
                 project.pop('reference_sentence_id',None)
             write_json(self.path,project)
             plan=PairedSegmentPlan(project,0,len(project['segments'])-1,full=True)
-            self.assertFalse(plan.pairs)
+            self.assertEqual(len(plan.pairs),len(project['segments']))
+            plan.delete_sentences(range(len(plan.pairs)))
             plan.add_sentence(.2,.7)
             plan.add_sentence(1.6,2.2)
             draft=self.path.parent/'.temp'/'segmentation-full-draft.json'
@@ -173,6 +174,15 @@ class CommitTests(unittest.TestCase):
             self.assertEqual(current.get('prepared_audio_key'),project.get('prepared_audio_key'))
             self.assertEqual(read_json(result['backup']),project)
             self.assertFalse(draft.exists())
+
+    def test_full_import_without_edits_keeps_existing_results_without_models(self):
+        from voxlate.paired_segments import PairedSegmentPlan
+        plan=PairedSegmentPlan(self.project,0,len(self.project['segments'])-1,full=True)
+        runner=Mock(side_effect=AssertionError('unchanged sentences must not run models'))
+        result=apply_segmentation(self.path,digest(self.project),self.integration.cfg,plan.blocks,runner=runner,full=True)
+        self.assertTrue(result['unchanged'])
+        self.assertEqual(read_json(self.path),self.project)
+        runner.assert_not_called()
 
     def test_full_manual_on_fresh_separation_can_dub_and_export(self):
         from voxlate.paired_segments import PairedSegmentPlan
