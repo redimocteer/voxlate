@@ -48,6 +48,13 @@ def time_text(value):
     return f'{seconds//3600:02d}:{seconds//60%60:02d}:{seconds%60:02d}.{fraction:03d}'
 
 
+def range_text(start, end):
+    first, last = time_text(start), time_text(end)
+    # Keep full end time across minute boundaries so the interval stays unambiguous.
+    suffix = last.rsplit(':',1)[-1].replace('.',':') if first[:6] == last[:6] else last
+    return f'{first} - {suffix}'
+
+
 def waveform_peaks(path, limit=150000, start=0., end=None):
     """Stream PCM into bounded peak bins; never load a whole film into memory."""
     values = []
@@ -559,7 +566,7 @@ class SegmentationDialog(QDialog):
             self.table.setRowCount(len(self.plan.pairs))
             for index, (start, end) in enumerate(self.plan.pairs):
                 content = self.plan.content(index)
-                for col, value in ((0, str(self.plan.number(index))), (1, f'{time_text(start)} → {time_text(end)}'),
+                for col, value in ((0, str(self.plan.number(index))), (1, range_text(start,end)),
                                    (2, content['text']), (3, content['target_text'])):
                     item = QTableWidgetItem(value)
                     if col < 2:

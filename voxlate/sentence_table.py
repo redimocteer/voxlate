@@ -6,8 +6,8 @@ from PySide6.QtWidgets import QApplication, QTableWidget, QTableWidgetSelectionR
 
 HEADER_HELP = {
     0: '单击时间或拖选连续几句，再点“局部微调…”。',
-    1: '拖选或 Ctrl / Shift 多选，Ctrl+C 复制；最右侧图标控制是否配音。',
-    2: '选中后再点一次修改译文，自动保存；Ctrl+C 复制，右击取消选择。',
+    1: 'Ctrl+C 复制',
+    2: '点击译文修改；Ctrl+C 复制',
 }
 
 

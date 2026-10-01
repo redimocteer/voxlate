@@ -146,6 +146,38 @@ except ImportError:
 
 @unittest.skipUnless(HAS_QT, "Install requirements-gui.txt for GUI tests")
 class GuiTests(unittest.TestCase):
+    def test_right_click_dub_selects_reference_or_cancels_without_changes(self):
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QDialog
+        path = Path(self.directory.name)/'synthetic.mp4.voxlate/project.json'
+        project = dict(schema_version=1,name='voxlate',input=str(Path(self.directory.name)/'synthetic.mp4'),duration=4,
+            voice_mode='individual',segments=[dict(id=1,start=0,end=1,source_text='Hello',target_text='你好'),
+                dict(id=2,start=2,end=3,source_text='Welcome',target_text='欢迎')])
+        write_json(path,project)
+        w=self.window; w.load_project(path)
+        before=path.read_bytes()
+        with patch.object(QDialog,'exec',return_value=QDialog.DialogCode.Rejected), patch.object(w,'dub_sentence') as dub:
+            w.table.cellWidget(0,3).dub.customContextMenuRequested.emit(QPoint())
+            dub.assert_not_called()
+            self.assertEqual(path.read_bytes(),before)
+        def choose(dialog):
+            dialog.reference.setCurrentIndex(dialog.reference.findData(2))
+            self.assertEqual(dialog.text.text(),'Welcome')
+            return QDialog.DialogCode.Accepted
+        with patch.object(QDialog,'exec',new=choose), patch.object(w,'dub_sentence') as dub:
+            w.table.cellWidget(0,3).dub.customContextMenuRequested.emit(QPoint())
+            dub.assert_called_once_with(0)
+        self.assertEqual(read_json(path)['segments'][0]['voice_reference_sentence_id'],2)
+        self.assertNotIn('voice_reference_sentence_id',read_json(path)['segments'][1])
+        def reset(dialog):
+            self.assertEqual(dialog.reference.currentData(),2)
+            dialog.reference.setCurrentIndex(0)
+            return QDialog.DialogCode.Accepted
+        with patch.object(QDialog,'exec',new=reset), patch.object(w,'dub_sentence') as dub:
+            w.choose_sentence_voice(0)
+            dub.assert_called_once_with(0)
+        self.assertNotIn('voice_reference_sentence_id',read_json(path)['segments'][0])
+
     def test_release_dialog_allows_choosing_only_translation(self):
         from PySide6.QtWidgets import QDialog, QDialogButtonBox, QCheckBox
         tts=Mock(); tts.poll.return_value=None
@@ -186,7 +218,10 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(table.item(0,0).data(Qt.ItemDataRole.UserRole))
         QTest.mouseClick(table.viewport(),Qt.MouseButton.RightButton,pos=point)
         self.assertFalse(table.selectedIndexes())
-        table.cellWidget(0,6).button.click()
+        with patch('voxlate.gui.select_voice_version') as versions, patch.object(w, 'refresh_sentence_buttons', wraps=w.refresh_sentence_buttons) as refresh:
+            table.cellWidget(0,6).button.click()
+            versions.assert_not_called()
+            refresh.assert_called_once_with({0})
         self.assertFalse(read_json(path)['segments'][0]['enabled'])
         self.assertTrue(table.item(0,1).font().italic())
         self.assertTrue(table.item(0,2).font().italic())
@@ -1448,6 +1483,7 @@ class GuiTests(unittest.TestCase):
 
     def test_main_layout_keeps_only_common_controls(self):
         labels = [w.text() for w in self.window.findChildren(QLabel)]
+        self.assertNotIn('│', labels)
         buttons = [w.text() for w in self.window.findChildren(QPushButton)]
         self.assertNotIn("源语言", labels)
         for text in ("打开已有项目", "新建项目", "查看项目日志", "播放 / 选音色", "自动选最长句"):
@@ -1456,7 +1492,7 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(hasattr(self.window, 'reference'))
         self.assertEqual(self.window.uniform_voice.text(), '统一音色')
         self.assertEqual(self.window.individual_voice.text(), '逐句音色')
-        for text in ('分离', '自动分句', '手动分句...', '翻译', '配音', '导出', '一键完成'):
+        for text in ('分离', '自动分句', '手动分句...', '全文翻译', '全文配音', '导出', '一键完成'):
             self.assertIn(text, buttons)
         self.assertIn('清空项目', buttons)
 
@@ -1535,6 +1571,27 @@ class GuiTests(unittest.TestCase):
             self.window.start_pipeline('dub')
             question.assert_not_called()
             start.assert_called_once()
+
+    def test_auto_recognition_warns_before_overwriting_manual_boundaries(self):
+        video = Path(self.directory.name)/'synthetic.mp4'
+        video.write_bytes(b'fixture')
+        path = self.window.default_project_path(video)
+        project = dict(schema_version=1, name='voxlate', input=str(video), duration=2,
+            manual_edits=[dict(reason='synthetic')],
+            segments=[dict(id=1,start=0,end=1,source_text='Hello',target_text='你好',manual_boundary=True)])
+        write_json(path,project)
+        self.window.load_project(path)
+        before = path.read_bytes()
+        with patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.No) as question, patch.object(self.window,'start_task') as start:
+            self.window.start_pipeline('recognize')
+            self.assertIn('自动分句将覆盖当前手动分句',question.call_args.args[2])
+            start.assert_not_called()
+            self.assertEqual(path.read_bytes(),before)
+        with patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.Yes), patch.object(self.window,'start_task') as start:
+            self.window.start_pipeline('recognize')
+        with patch('voxlate.gui.check_resources',return_value=[]), patch('voxlate.gui.VideoDubPipeline') as pipeline:
+            start.call_args.args[0](lambda text:None)
+            self.assertTrue(pipeline.return_value.process.call_args.kwargs['force_recognition'])
 
     def test_retranslation_confirms_overwriting_discarded_text(self):
         video = Path(self.directory.name)/'source.mp4'

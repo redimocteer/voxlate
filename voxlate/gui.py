@@ -31,7 +31,7 @@ from .recognition_models import MODELS as ASR_MODELS, selected_key as selected_a
 from .resource_cache import load_resource_cache, save_resource_cache
 from .project_storage import default_project_directory, existing_project_directory, validate_project_directory, project_root, clear_video_project, relocate_saved_project
 from .translation_view import TranslationDelegate, TIMING_ROLE, acceleration, GRADIENT_START
-from .dubbing_state import audio_exists, sentence_ready, dubbing_ready, voice_key, voice_selection, select_voice_version, automatic_reference
+from .dubbing_state import audio_exists, sentence_ready, dubbing_ready, voice_key, voice_contexts, voice_selection, select_voice_version, automatic_reference
 from .tts_session import TTSSession
 from .roles import ensure_roles, validate_roles, apply_automatic_voice_mode
 from .role_dialog import RoleDialog
@@ -114,7 +114,7 @@ def sentence_play_icon(stopped=False):
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor('#23324a'))
+    painter.setBrush(QColor('#3269df'))
     if stopped:
         painter.drawRect(8, 8, 16, 16)
     else:
@@ -488,12 +488,11 @@ class MainWindow(QMainWindow):
         self.recognize_button = self.button("自动分句", lambda: self.start_pipeline("recognize"))
         self.recognize_button.setToolTip('识别已分离的人声；Qwen 自动续跑。应用自动分句会替换手动分句和译文，需重新配音。')
         actions.addWidget(self.recognize_button)
-        actions.addWidget(QLabel("│"))
         actions.addWidget(self.full_segmentation_button)
-        self.translate_button = self.button("翻译", lambda: self.start_pipeline('translate'))
+        self.translate_button = self.button("全文翻译", lambda: self.start_pipeline('translate'))
         self.translate_button.setEnabled(False)
         actions.addWidget(self.translate_button)
-        self.dub_button = self.button("配音", lambda: self.start_pipeline('dub'))
+        self.dub_button = self.button("全文配音", lambda: self.start_pipeline('dub'))
         self.dub_button.setEnabled(False)
         actions.addWidget(self.dub_button)
         self.export_button = self.button("导出", lambda: self.start_pipeline('export'))
@@ -1497,14 +1496,14 @@ class MainWindow(QMainWindow):
         return (bool(self.project.get("translation_config_key")) or any(s.get("target_text", "").strip() for s in segments)) and all(
             s.get("target_text", "").strip() for s in segments if s.get("enabled", True))
 
-    def refresh_export_state(self):
+    def refresh_export_state(self, rows=None):
         self.refresh_model_button()
         self.audio_track_box.setEnabled(self.task is None and len(self.audio_tracks) > 1)
         self.translate_button.setEnabled(self.task is None and bool((self.project or {}).get('segments')))
         self.one_click_button.setEnabled(self.task is None)
         self.role_manager_button.setEnabled(self.task is None and bool((self.project or {}).get('segments')))
         self.full_segmentation_button.setEnabled(self.task is None and bool((self.project or {}).get('prepared_audio_key')))
-        for row in range(self.table.rowCount()):
+        for row in (range(self.table.rowCount()) if rows is None else rows):
             combo = self.table.cellWidget(row, 5)
             if combo:
                 combo.setEnabled(self.task is None)
@@ -1529,7 +1528,7 @@ class MainWindow(QMainWindow):
         ready = dubbing_ready(self.project, self.cfg)
         self.export_button.setEnabled(self.task is None and ready and not self.dirty)
         self.export_button.setToolTip('')
-        self.refresh_sentence_buttons()
+        self.refresh_sentence_buttons(rows)
 
     def make_sentence_buttons(self, row):
         widget = QWidget()
@@ -1549,6 +1548,8 @@ class MainWindow(QMainWindow):
             button.setFixedSize(30, 26)
             layout.addWidget(button)
         widget.dub.clicked.connect(lambda checked=False, r=row: self.dub_sentence(r))
+        widget.dub.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        widget.dub.customContextMenuRequested.connect(lambda pos, r=row: self.choose_sentence_voice(r))
         widget.play.clicked.connect(lambda checked=False, r=row: self.play_sentence(r))
         self.table.setCellWidget(row, 3, widget)
         original = QWidget()
@@ -1593,20 +1594,27 @@ class MainWindow(QMainWindow):
             return aligned
         return segment.get('tts_audio') if audio_exists(segment.get('tts_audio')) else None
 
-    def refresh_sentence_buttons(self):
+    def refresh_sentence_buttons(self, rows=None):
         if not self.project:
             return
-        for row, segment in enumerate(self.project.get('segments', [])):
+        contexts = voice_contexts(self.project,self.cfg)
+        from .languages import translation_settings
+        config_matches = self.project.get('translation_config_key') in (None,digest(translation_settings(self.cfg)))
+        segments = self.project.get('segments', [])
+        for row in (range(len(segments)) if rows is None else rows):
+            segment = segments[row]
             if row >= self.table.rowCount():
                 break
             widget = self.table.cellWidget(row, 3)
             if widget is None:
                 continue
-            ready = sentence_ready(segment, voice_key(self.project, self.cfg, segment))
+            ready = sentence_ready(segment, contexts[segment['id']])
             widget.dub.setEnabled(self.task is None and not self.dirty and segment.get('enabled', True)
                                   and (not self.role_voice.isChecked() or self.project.get('roles_initialized', False))
-                                  and self.translation_ready([segment['id']]))
-            widget.dub.setToolTip('重新配音本句' if ready else '生成本句配音（未生成或内容、音色已修改）')
+                                  and config_matches and bool(segment.get('target_text','').strip()))
+            reference_id = segment.get('voice_reference_sentence_id')
+            widget.dub.setToolTip(('重新配音本句' if ready else '生成本句配音') + '；右击选择音色' +
+                (f'（参考第 {reference_id} 句）' if reference_id is not None else ''))
             widget.play.setEnabled(bool(self.sentence_audio(segment)))
             widget.play.setToolTip('试听本句配音' if ready else '试听上次配音；当前修改尚未生成')
             original = self.table.cellWidget(row, 4)
@@ -1729,6 +1737,21 @@ class MainWindow(QMainWindow):
         if self.task or not self.project or row >= len(self.project['segments']):
             return
         self.start_pipeline('dub', sentence_ids=[self.project['segments'][row]['id']], force_tts=True)
+
+    def choose_sentence_voice(self, row):
+        if self.task or not self.project or not 0 <= row < len(self.project['segments']):
+            return
+        if not self.table.cellWidget(row, 3).dub.isEnabled():
+            return
+        from .sentence_voice_dialog import SentenceVoiceDialog
+        rows = {s['id']: i for i, s in enumerate(self.project['segments'])}
+        dialog = SentenceVoiceDialog(self.project, row,
+            lambda ident: self.play_sentence(rows[ident], original=True), self)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        self.stop_sentence_audio()
+        if accepted and self.save_translations(sentence_references={
+                self.project['segments'][row]['id']: dialog.reference.currentData()}):
+            self.dub_sentence(row)
 
     def change_source_language(self):
         from .languages import direction, direction_id, LANGUAGES
@@ -2006,11 +2029,14 @@ class MainWindow(QMainWindow):
             return
         if self.table.selecting_text:
             return
+        was_dirty = self.dirty
         item = self.table.item(row, 0)
-        item.setData(Qt.ItemDataRole.UserRole, not item.data(Qt.ItemDataRole.UserRole))
+        enabled = not item.data(Qt.ItemDataRole.UserRole)
+        item.setData(Qt.ItemDataRole.UserRole, enabled)
+        self.table.cellWidget(row,6).button.setIcon(action_icon('include' if enabled else 'exclude'))
         self.update_sentence_style(row)
         self.dirty = True
-        self.save_translations()
+        self.save_translations(changed_rows=None if was_dirty else {row})
 
     def refresh_segmentation_selection(self):
         if not any(index.column() == 0 for index in self.table.selectedIndexes()):
@@ -2154,7 +2180,7 @@ class MainWindow(QMainWindow):
         finally:
             self.table.blockSignals(previous)
 
-    def save_translations(self, *, roles=None, assignments=None, roles_initialized=None, automatic_role_count=None, report_errors=True):
+    def save_translations(self, *, roles=None, assignments=None, roles_initialized=None, automatic_role_count=None, report_errors=True, changed_rows=None, sentence_references=None):
         if not self.project or not self.project_path:
             return True
         try:
@@ -2163,37 +2189,54 @@ class MainWindow(QMainWindow):
                 current = read_json(self.project_path)
                 if digest(current) != self.project_hash:
                     raise VoxlateError("项目已被其他进程修改。请先备份当前译文并重新打开项目，避免覆盖。")
-                for row, s in enumerate(current["segments"]):
-                    # Preserve the original measurement's text when editing legacy projects.
-                    if "generated_duration" in s and "timing_text" not in s:
-                        s["timing_text"] = s.get("target_text", "")
-                    s["target_text"] = self.table.item(row, 2).text().strip()
-                    s["enabled"] = bool(self.table.item(row, 0).data(Qt.ItemDataRole.UserRole))
-                current.update(voice_mode=self.selected_voice_mode(),
-                    reference_sentence_id=self.reference_sentence.value() or None,
-                    reference_auto_recommend=self.reference_sentence.value() == 0,
-                    speaker_reference='', reference_range=None, auto_reference=True)
-                current.pop('reference_auto_longest', None)
-                if roles is not None:
-                    current['roles'] = copy.deepcopy(roles)
-                if current['voice_mode'] == 'roles' or current.get('roles'):
-                    ensure_roles(current)
-                    for segment in current['segments']:
-                        if assignments and segment['id'] in assignments:
-                            segment.update(assignments[segment['id']])
-                    validate_roles(current, allow_legacy_names=roles is None)
-                if roles_initialized is not None:
-                    current['roles_initialized'] = roles_initialized
-                if automatic_role_count is not None:
-                    apply_automatic_voice_mode(current, automatic_role_count)
-                select_voice_version(current, self.cfg)
+                if changed_rows is not None:
+                    # A standalone include/exclude click changes no voice or text settings.
+                    for row in changed_rows:
+                        current['segments'][row]['enabled'] = bool(self.table.item(row, 0).data(Qt.ItemDataRole.UserRole))
+                else:
+                    for row, s in enumerate(current["segments"]):
+                        # Preserve the original measurement's text when editing legacy projects.
+                        if "generated_duration" in s and "timing_text" not in s:
+                            s["timing_text"] = s.get("target_text", "")
+                        s["target_text"] = self.table.item(row, 2).text().strip()
+                        s["enabled"] = bool(self.table.item(row, 0).data(Qt.ItemDataRole.UserRole))
+                    current.update(voice_mode=self.selected_voice_mode(),
+                        reference_sentence_id=self.reference_sentence.value() or None,
+                        reference_auto_recommend=self.reference_sentence.value() == 0,
+                        speaker_reference='', reference_range=None, auto_reference=True)
+                    current.pop('reference_auto_longest', None)
+                    if roles is not None:
+                        current['roles'] = copy.deepcopy(roles)
+                    if current['voice_mode'] == 'roles' or current.get('roles'):
+                        ensure_roles(current)
+                        for segment in current['segments']:
+                            if assignments and segment['id'] in assignments:
+                                segment.update(assignments[segment['id']])
+                        validate_roles(current, allow_legacy_names=roles is None)
+                    if roles_initialized is not None:
+                        current['roles_initialized'] = roles_initialized
+                    if automatic_role_count is not None:
+                        apply_automatic_voice_mode(current, automatic_role_count)
+                    if sentence_references is not None:
+                        ids = {s['id'] for s in current['segments']}
+                        if any(ident not in ids or (ref is not None and (type(ref) is not int or ref not in ids))
+                               for ident, ref in sentence_references.items()):
+                            raise VoxlateError('音色参考句已变化，请重新选择。')
+                        for segment in current['segments']:
+                            if segment['id'] in sentence_references:
+                                reference_id = sentence_references[segment['id']]
+                                if reference_id is None:
+                                    segment.pop('voice_reference_sentence_id', None)
+                                else:
+                                    segment['voice_reference_sentence_id'] = reference_id
+                    select_voice_version(current, self.cfg)
                 write_json(self.project_path, current)
                 self.project = current
                 self.project_hash = digest(current)
             self.dirty = False
-            for row, segment in enumerate(self.project['segments']):
+            for row in (range(len(self.project['segments'])) if changed_rows is None else changed_rows):
                 self.update_sentence_style(row)
-            self.refresh_export_state()
+            self.refresh_export_state(changed_rows)
             return True
         except (OSError, ValueError, VoxlateError) as exc:
             if report_errors:
@@ -2236,7 +2279,8 @@ class MainWindow(QMainWindow):
                   and (sentence_ids is None or s['id'] in sentence_ids)]
         message = None
         if stop_after == 'recognize' and (segments or (self.project or {}).get('manual_edits')):
-            message = '重新识别整个视频？\n手动分句、选弃和译文修改将被自动结果替换，需重新配音。\n原项目会自动备份。'
+            manual = bool((self.project or {}).get('manual_edits')) or any(s.get('manual_boundary') for s in segments)
+            message = ('自动分句将覆盖当前手动分句，继续？' if manual else '重新识别整个视频？') + '\n分句、选弃和译文修改将被自动结果替换，需重新配音。\n原项目会自动备份。'
         elif stop_after == 'translate' and any(s.get('target_text', '').strip() for s in segments):
             message = '已有译文，重新翻译？\n包括已舍弃句子；保留原文、分句和选弃状态。\n已选句子译文变化后需重新配音，原项目会自动备份。'
         elif stop_after == 'dub' and sentence_ids is None and any(audio_exists(s.get('tts_audio')) for s in active):

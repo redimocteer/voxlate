@@ -1,6 +1,6 @@
 """Shared compact controls for the desktop interface."""
-from PySide6.QtCore import Qt, QSize, QRectF
-from PySide6.QtGui import QPalette, QPixmap, QPainter, QColor, QPen, QIcon
+from PySide6.QtCore import Qt, QSize, QRectF, QPointF
+from PySide6.QtGui import QPalette, QPixmap, QPainter, QColor, QPen, QIcon, QPolygonF
 from PySide6.QtWidgets import QComboBox, QStylePainter, QStyleOptionComboBox, QStyle, QPushButton, QWidget, QHBoxLayout
 
 
@@ -13,10 +13,14 @@ def action_icon(kind):
     if kind == 'delete':
         for line in ((5,7,19,7),(9,4,15,4),(7,8,8,20),(17,8,16,20),(8,20,16,20),(10,10,10,17),(14,10,14,17)):
             painter.drawLine(*line)
+    elif kind == 'play':
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor('#3269df'))
+        painter.drawPolygon(QPolygonF([QPointF(7,4), QPointF(20,12), QPointF(7,20)]))
     elif kind in ('include', 'exclude'):
-        painter.drawEllipse(QRectF(4,4,16,16))
+        painter.setPen(QPen(QColor('#3269df' if kind == 'include' else '#a0a8b4'), 2.6))
         if kind == 'exclude':
-            painter.drawLine(7,17,17,7)
+            painter.drawLine(6,12,18,12)
         else:
             painter.drawLine(7,12,11,16)
             painter.drawLine(11,16,17,8)
