@@ -3,11 +3,18 @@
   "visibility": "public",
   "description": "Windows 本地视频配音工具｜英/日→中文、音色克隆、角色分组、逐句试听与重配、手动分句。Offline video dubbing with sentence-level editing.",
   "topics": [
-    "video-dubbing", "voice-cloning", "offline", "speech-recognition",
-    "translation", "text-to-speech", "speaker-diarization", "windows",
-    "python", "pyside6"
+    "video-dubbing",
+    "voice-cloning",
+    "offline",
+    "speech-recognition",
+    "translation",
+    "text-to-speech",
+    "speaker-diarization",
+    "windows",
+    "python",
+    "pyside6"
   ],
-  "release_tag": "v0.1.0-beta.2",
-  "release_title": "Voxlate v0.1.0-beta.2 · 日语识别修复与文字复制",
+  "release_tag": "v0.1.0-beta.3",
+  "release_title": "Voxlate v0.1.0-beta.3 · 分句编辑与逐句配音",
   "prerelease": true
 }

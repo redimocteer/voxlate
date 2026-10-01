@@ -1,8 +1,8 @@
 # 下载与安装
 
-当前版本：[v0.1.0-beta.2 · Windows 测试版](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.2)。自动结果仍需校对，请先用短片测试。
+当前版本：[v0.1.0-beta.3 · Windows 测试版](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.3)。自动结果仍需校对，请先用短片测试。
 
-本版修复单个 Whisper 模型进行日语识别时的启动错误，并支持框选原文／译文后 `Ctrl+C` 复制。旧版用户退出程序后改用新版即可，沿用原配置和模型；详见[更新说明](RELEASE_NOTES_v0.1.0-beta.2.md)。
+本版新增波形分句编辑、Qwen 续识别、单句参考音色及翻译／配音补缺选择，并改善操作响应。旧版用户退出程序后改用新版即可，沿用原配置和模型；详见[更新说明](RELEASE_NOTES_v0.1.0-beta.3.md)。
 
 程序包不含模型及外部推理环境。准备这些资源之前，请先阅读[下载选择与上游条款](RESOURCE_DOWNLOADS.md)；不接受的资源不必下载。开发分支新增的逐项下载确认、许可留存及导出说明尚未包含在此旧版 EXE 中。
 
@@ -12,9 +12,9 @@
 
 打开 [Voxlate Releases](https://github.com/redimocteer/voxlate/releases)，查看标有 **Pre-release** 的测试版。
 
-- 普通用户：`Voxlate-v0.1.0-beta.2-windows-x64.zip`。
+- 普通用户：`Voxlate-v0.1.0-beta.3-windows-x64.zip`。
 - 校验文件：`SHA256SUMS.txt`，用于比对下载文件的 SHA-256。
-- `Voxlate-v0.1.0-beta.2-third-party-sources.zip` 是对应依赖源码，运行时无需下载。
+- `Voxlate-v0.1.0-beta.3-third-party-sources.zip` 是对应依赖源码，运行时无需下载。
 - `Source code (zip)` / `Source code (tar.gz)` 是源码，不能直接双击运行。
 
 ## 第一次运行
@@ -23,7 +23,7 @@
 2. 双击 `voxlate.exe`，无需预装 Python。
 3. 进入 **资源配置**，选择磁盘空间足够的目录，点击 **一键准备**。模型与环境需要另外下载，合计数十 GB。
 4. 拖入视频，选择音轨及 **英文 → 中文** 或 **日文 → 中文**。
-5. 点击 **一键导出**；需要校对时按界面步骤分别执行，在句子右侧试听和重配。新版将分离、识别拆开，依次为分离、识别、翻译、配音、导出；已发布的 beta.2 仍为四步。
+5. 点击 **一键完成**，或依次执行 **分离 → 自动分句／手动分句 → 全文翻译 → 全文配音 → 导出**，在句子右侧试听和重配。
 
 当前默认需要 NVIDIA CUDA 显卡；最低内存／显存尚未系统验证，先用短片测试。详细功能和限制见 [README](../README.md)。
 

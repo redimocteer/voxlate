@@ -193,6 +193,30 @@ class Invariants(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg unavailable")
 class PipelineIntegration(unittest.TestCase):
+    def test_fill_missing_preserves_existing_translation_even_when_settings_change(self):
+        self.run_pipeline(stop_after='translate')
+        path = self.work/'project.json'
+        project = read_json(path)
+        project['segments'][0]['target_text'] = '人工保留的译文'
+        project['segments'][1].update(target_text='  ',enabled=False)
+        write_json(path,project)
+        self.cfg['translator']['temperature'] = .123
+        pipeline = VideoDubPipeline(self.cfg,self.runner)
+        with patch.object(pipeline,'runner',wraps=pipeline.runner) as runner:
+            pipeline.process(self.video,self.output,self.work,stop_after='translate',
+                             translate_only=True,translate_missing_only=True)
+            translated = [c for c in runner.call_args_list if c.args[0] == 'translator']
+            self.assertEqual(len(translated),1)
+            self.assertEqual(translated[0].args[1]['texts'],['Welcome.'])
+            self.assertEqual(translated[0].args[1]['indices'],[1])
+        current = read_json(path)
+        self.assertEqual(current['segments'][0],project['segments'][0])
+        self.assertEqual(current['segments'][1]['target_text'],'欢迎。')
+        self.assertFalse(current['segments'][1]['enabled'])
+        before = self.calls['translator']
+        self.run_pipeline(stop_after='translate',translate_only=True,translate_missing_only=True)
+        self.assertEqual(self.calls['translator'],before)
+
     def test_separation_and_recognition_are_independent_and_reusable(self):
         model_path = self.cfg['asr']['model_path']
         self.cfg['asr']['model_path'] = str(self.root/'absent-asr')

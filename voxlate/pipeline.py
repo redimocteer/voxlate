@@ -231,7 +231,7 @@ class VideoDubPipeline:
     def process(self, video_path, output_path, work_dir, speaker_ref=None, stop_after=None, reference_range=None,
                 *, require_translated=False, auto_reference=None, export_only=False, sentence_ids=None, force_tts=False,
                 voice_mode=None, reference_sentence_id=None, force_translation=False, force_recognition=False,
-                translate_only=False, auto_export=False, recognition_only=False):
+                translate_only=False, auto_export=False, recognition_only=False, translate_missing_only=False):
         video, output = Path(video_path).resolve(), Path(output_path).resolve()
         self.work = Path(work_dir).resolve()
         if not video.is_file():
@@ -250,6 +250,7 @@ class VideoDubPipeline:
         self.sentence_ids = set(sentence_ids) if sentence_ids is not None else None
         self.force_tts = force_tts
         self.force_translation = force_translation
+        self.translate_missing_only = translate_missing_only
         self.force_recognition = force_recognition
         self.translate_only, self.auto_export = translate_only, auto_export
         self.recognition_only = recognition_only
@@ -260,6 +261,8 @@ class VideoDubPipeline:
             raise VoxlateError('重新识别仅能用于识别步骤')
         if translate_only and (stop_after != 'translate' or force_recognition):
             raise VoxlateError('单独翻译不能重新识别')
+        if translate_missing_only and (not translate_only or force_translation or auto_export or export_only):
+            raise VoxlateError('补全译文仅能用于单独翻译，不能同时覆盖已有译文')
         if auto_export and (stop_after is not None or export_only or force_recognition or force_translation or force_tts):
             raise VoxlateError('一键导出仅接续未完成步骤')
         if force_translation and stop_after != 'translate':
@@ -495,7 +498,8 @@ class VideoDubPipeline:
         config_key = digest(self.cfg['translator'])
         changed = self.project.get('translation_config_key') not in (None, config_key)
         pending = [s for s in segments if
-            self.force_translation or changed or not s.get('target_text', '').strip()]
+            not s.get('target_text', '').strip() or
+            (not self.translate_missing_only and (self.force_translation or changed))]
         if pending:
             LOG.info('翻译：%d 句', len(pending))
             stamp = digest(CACHE_VERSION, self.cfg['translator'], model_stamp(self.cfg['translator']['model_path']))
