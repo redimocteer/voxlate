@@ -4,12 +4,12 @@ import math
 import sys
 import wave
 
-from PySide6.QtCore import Qt, Signal, QPointF, QRectF, QTimer, QUrl
+from PySide6.QtCore import Qt, Signal, QPointF, QRectF, QTimer, QUrl, QEvent, QItemSelectionModel, QItemSelection
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF, QShortcut, QKeySequence, QPixmap, QIcon
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
-    QScrollBar, QMessageBox, QAbstractItemView, QSplitter, QCheckBox)
+    QScrollBar, QMessageBox, QAbstractItemView, QSplitter, QCheckBox, QStyledItemDelegate)
 
 from .common import VoxlateError, digest, read_json, write_json
 from .media import check_cancelled
@@ -25,6 +25,34 @@ def editor_stop_icon():
     painter.fillRect(6, 6, 12, 12, QColor('#385dce'))
     painter.end()
     return QIcon(pixmap)
+
+
+def action_icon(kind):
+    pixmap=QPixmap(24,24); pixmap.fill(Qt.GlobalColor.transparent)
+    painter=QPainter(pixmap)
+    painter.setPen(QPen(QColor('#526885'),1.7))
+    if kind == 'delete':
+        for a,b,c,d in ((5,7,19,7),(9,4,15,4),(7,8,8,20),(17,8,16,20),(8,20,16,20),(10,10,10,17),(14,10,14,17)):
+            painter.drawLine(a,b,c,d)
+    else:
+        painter.drawText(QRectF(0,0,15,18),Qt.AlignmentFlag.AlignCenter,'文')
+        painter.drawText(QRectF(10,8,14,16),Qt.AlignmentFlag.AlignCenter,'A')
+    painter.end()
+    return QIcon(pixmap)
+
+
+class SentenceTextDelegate(QStyledItemDelegate):
+    def createEditor(self, parent, option, index):
+        editor=super().createEditor(parent,option,index)
+        if hasattr(editor,'setMaxLength'):
+            editor.setMaxLength(1200)
+        return editor
+
+    def eventFilter(self, editor, event):
+        if event.type() == QEvent.Type.ShortcutOverride:
+            event.accept()  # Editing text owns letters, arrows and Ctrl+A/Z.
+            return True
+        return super().eventFilter(editor,event)
 
 
 def time_text(value):
@@ -272,7 +300,8 @@ class WaveformOverview(QWidget):
         self.canvas, self.waveform = canvas, waveform
         self.drag_offset = None
         self.setFixedHeight(90)
-        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
         self.setAccessibleName('全局波形导航')
         canvas.viewChanged.connect(self.update)
 
@@ -290,23 +319,35 @@ class WaveformOverview(QWidget):
         c.update()
         c.viewChanged.emit()
 
+    def viewport_contains(self, point):
+        return QRectF(self.x(self.canvas.left),8,
+            max(3,self.x(self.canvas.left+self.canvas.span)-self.x(self.canvas.left)),64).contains(point)
+
+    def hover_cursor(self, point):
+        self.setCursor(Qt.CursorShape.OpenHandCursor if self.viewport_contains(point) else Qt.CursorShape.ArrowCursor)
+
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
             return super().mousePressEvent(event)
         seconds = self.seconds(event.position().x())
-        self.setCursor(Qt.CursorShape.ClosedHandCursor)
         c = self.canvas
-        self.drag_offset = seconds-c.left if c.left <= seconds <= c.left+c.span else c.span/2
-        self.navigate(seconds-self.drag_offset)
+        if self.viewport_contains(event.position()):
+            self.drag_offset = seconds-c.left
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        else:
+            self.navigate(seconds-c.span/2)
+            self.hover_cursor(event.position())
 
     def mouseMoveEvent(self, event):
         if self.drag_offset is not None:
             self.navigate(self.seconds(event.position().x())-self.drag_offset)
+        else:
+            self.hover_cursor(event.position())
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_offset = None
-            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            self.hover_cursor(event.position())
 
     def wheelEvent(self, event):
         anchor = self.seconds(event.position().x())
@@ -343,10 +384,11 @@ class SegmentationDialog(QDialog):
     volumeChanged = Signal(int)
 
     def __init__(self, project, first, last, original, vocals, waves, *, blocks=None, volume=80,
-                 load_waves=None, parent=None, full=False, overview_waves=None):
+                 load_waves=None, parent=None, full=False, overview_waves=None, translate_selection=None):
         super().__init__(parent)
         self.plan = PairedSegmentPlan(project, first, last, blocks, full=full)
         self.wave_loader = load_waves
+        self.translator = translate_selection
         self.worker = None
         self.setWindowTitle(('手动分句 · 全片' if full else '手动微调') + (' · 已恢复草稿' if blocks else ''))
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
@@ -359,6 +401,7 @@ class SegmentationDialog(QDialog):
         self.rendered_cuts = None
         self.detail_worker = None
         self.play_icon, self.stop_icon = playback_icon(False), editor_stop_icon()
+        self.translate_icon, self.delete_icon = action_icon('translate'), action_icon('delete')
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
         self.audio.setVolume(volume/100)
@@ -383,18 +426,7 @@ class SegmentationDialog(QDialog):
         self.scroll.valueChanged.connect(self.scroll_view)
         self.canvas.viewChanged.connect(self.update_scroll)
         self.overview = WaveformOverview(self.canvas, self.overview_waves[0])
-        navigation = QHBoxLayout()
-        self.previous_view, self.next_view = QPushButton('←'), QPushButton('→')
-        for button, step, tip in ((self.previous_view,-1,'向左移动一屏（←）'), (self.next_view,1,'向右移动一屏（→）')):
-            button.setFixedSize(32,34)
-            button.setStyleSheet('padding: 0px;')
-            button.setToolTip(tip)
-            button.setAccessibleName(tip)
-            button.clicked.connect(lambda checked=False, step=step: self.pan_view(step))
-        navigation.addWidget(self.previous_view)
-        navigation.addWidget(self.overview, 1)
-        navigation.addWidget(self.next_view)
-        layout.addLayout(navigation)
+        layout.addWidget(self.overview)
         self.detail_timer = QTimer(self)
         self.detail_timer.setSingleShot(True)
         self.detail_timer.setInterval(150)
@@ -420,37 +452,46 @@ class SegmentationDialog(QDialog):
         self.volume.setFixedWidth(75)
         self.volume.valueChanged.connect(lambda value: (self.audio.setVolume(value/100), self.volumeChanged.emit(value)))
         controls.addWidget(self.volume)
+        self.preview_check = QCheckBox('视频预览')
+        self.preview_check.setToolTip('跟随试听和定位；关闭可减少解码开销。')
+        controls.addWidget(self.preview_check)
         controls.addStretch()
         controls.addWidget(self.undo_button)
         controls.addWidget(self.redo_button)
-        self.select_all_button, self.delete_button = QPushButton('全选'), QPushButton('删除')
-        self.select_all_button.setToolTip('全选句子（Ctrl+A）')
-        self.delete_button.setToolTip('删除选中句子，保留原声（D / Delete）；可撤销。')
+        self.select_all_button, self.delete_button = QPushButton('全选 A'), QPushButton('删除 D')
+        self.select_all_button.setCheckable(True)
+        self.select_all_button.setStyleSheet('QPushButton:checked { background-color: #dce8ff; border-color: #94b5f2; }')
         self.select_all_button.clicked.connect(self.select_all)
         self.delete_button.clicked.connect(lambda: self.delete_sentence())
         controls.addWidget(self.select_all_button)
         controls.addWidget(self.delete_button)
-        self.preview_check = QCheckBox('视频预览')
-        self.preview_check.setToolTip('跟随试听和定位；关闭可减少解码开销。')
-        controls.addWidget(self.preview_check)
+        self.translate_button = QPushButton('翻译 T')
+        self.translate_button.clicked.connect(lambda: self.translate_rows())
+        controls.addWidget(self.translate_button)
         layout.addLayout(controls)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(['句号', '时间', '原文'])
-        self.table.setToolTip('单击定位，双击试听；拖拽、Ctrl / Shift 多选。')
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(['句号', '时间', '原文', '译文', '', '', ''])
         self.table.verticalHeader().hide()
         header = self.table.horizontalHeader()
         header.setSectionsClickable(False)
         for column in (0, 1):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        for column in (4,5,6):
+            header.setSectionResizeMode(column,QHeaderView.ResizeMode.Fixed)
+            self.table.setColumnWidth(column,30)
+        self.table.setItemDelegate(SentenceTextDelegate(self.table))
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked | QAbstractItemView.EditTrigger.EditKeyPressed)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setMinimumHeight(175)
         self.table.currentCellChanged.connect(lambda row, col, old, oldcol: self.focus_block(row))
         self.table.itemSelectionChanged.connect(self.table_selection)
-        self.table.cellDoubleClicked.connect(lambda row, col: self.preview_row(row))
-        self.table.cellClicked.connect(lambda row, col: self.seek(self.plan.pairs[row][0]))
+        self.table.cellClicked.connect(self.row_action)
+        self.table.itemChanged.connect(self.text_changed)
+        for widget in (self.canvas,self.overview,self.table.viewport()):
+            widget.installEventFilter(self)
         from .segmentation_preview import SegmentationPreview
         self.video_preview = SegmentationPreview(project.get('input'), self)
         self.lower_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -474,7 +515,6 @@ class SegmentationDialog(QDialog):
         self.cancel_button.clicked.connect(self.reject)
         footer.addWidget(self.cancel_button)
         self.apply_button = QPushButton('应用修改')
-        self.apply_button.setToolTip('替换全片分句；未划选处保留原声，原项目自动备份。' if full else '')
         self.apply_button.setObjectName('primary')
         self.apply_button.clicked.connect(self.apply)
         footer.addWidget(self.apply_button)
@@ -502,7 +542,8 @@ class SegmentationDialog(QDialog):
                 ('Z', lambda: self.history(False)), ('R', lambda: self.history(True)),
                 ('Ctrl+Z', lambda: self.history(False)), ('Ctrl+Shift+Z', lambda: self.history(True)),
                 ('Ctrl+Y', lambda: self.history(True)), ('Space', self.toggle_play),
-                ('Ctrl+A', self.select_all), ('Left', lambda: self.pan_view(-1)), ('Right', lambda: self.pan_view(1))):
+                ('A', self.select_all), ('T', self.translate_rows), ('Ctrl+A', self.select_all),
+                ('Left', lambda: self.pan_view(-1)), ('Right', lambda: self.pan_view(1))):
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             shortcut.activated.connect(action)
@@ -517,23 +558,29 @@ class SegmentationDialog(QDialog):
     def render(self):
         self.current = min(self.current, len(self.plan.pairs)-1)
         self.canvas.current = self.current
-        signature = tuple(self.plan.cuts)
+        signature = (tuple(self.plan.cuts),repr(self.plan.edits))
         if signature != self.rendered_cuts:
             self.rendered_cuts = signature
             self.table.blockSignals(True)
             self.table.setRowCount(len(self.plan.pairs))
             for index, (start, end) in enumerate(self.plan.pairs):
-                text = self.plan.original_rows.get((start,end), {}).get('source_text','')
-                for col, value in ((0, str(self.plan.number(index))), (1, f'{time_text(start)} → {time_text(end)}'), (2, text)):
+                content = self.plan.content(index)
+                for col, value in ((0, str(self.plan.number(index))), (1, f'{time_text(start)} → {time_text(end)}'),
+                                   (2, content['text']), (3, content['target_text'])):
                     item = QTableWidgetItem(value)
-                    if col != 2:
+                    if col < 2:
                         item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     if col == 0:
                         item.setForeground(QColor(COLORS[index % len(COLORS)]))
-                    if col == 2:
-                        item.setToolTip(text)
-                        item.setForeground(QColor('#8994a5'))
                     self.table.setItem(index, col, item)
+                for col,icon in ((4,self.play_icon),(5,self.translate_icon),(6,self.delete_icon)):
+                    item=QTableWidgetItem()
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    item.setIcon(icon)
+                    if col == 5 and self.translator is None:
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                    self.table.setItem(index,col,item)
                 self.table.setRowHeight(index, 35)
             self.table.blockSignals(False)
             self.select_block(self.current)
@@ -544,6 +591,7 @@ class SegmentationDialog(QDialog):
         self.table.setEnabled(not busy)
         self.select_all_button.setEnabled(not busy and bool(self.plan.pairs))
         self.delete_button.setEnabled(not busy and bool(self.selected_rows()))
+        self.translate_button.setEnabled(not busy and self.translator is not None and bool(self.selected_rows()))
         self.undo_button.setEnabled(not busy and bool(self.plan.undo_stack))
         self.redo_button.setEnabled(not busy and bool(self.plan.redo_stack))
         self.apply_button.setEnabled(not busy and (not self.plan.full or bool(self.plan.pairs) or bool(self.plan.undo_stack)))
@@ -558,11 +606,84 @@ class SegmentationDialog(QDialog):
     def table_selection(self):
         self.canvas.selection = set(self.selected_rows())
         self.delete_button.setEnabled(self.worker is None and bool(self.canvas.selection))
+        self.translate_button.setEnabled(self.worker is None and self.translator is not None and bool(self.canvas.selection))
+        self.select_all_button.setChecked(bool(self.plan.pairs) and len(self.canvas.selection)==len(self.plan.pairs))
         self.canvas.update()
 
     def select_all(self):
         if self.worker is None:
-            self.table.selectAll()
+            if len(self.selected_rows()) == self.table.rowCount():
+                self.clear_selection()
+            else:
+                self.table.selectAll()
+
+    def clear_selection(self):
+        self.table.clearSelection()
+        self.table.setCurrentCell(-1,-1)
+        self.table_selection()
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.RightButton:
+            if self.worker is None:
+                self.table.setFocus()
+                self.clear_selection()
+            return True
+        return super().eventFilter(obj,event)
+
+    def row_action(self, row, column):
+        if self.worker is not None:
+            return
+        if column == 4:
+            self.preview_row(row)
+        elif column == 5:
+            self.translate_rows([row])
+        elif column == 6:
+            self.delete_sentence(row)
+        elif column < 4:
+            self.seek(self.plan.pairs[row][0])
+
+    def restore_selection(self, rows):
+        selection=QItemSelection()
+        for row in sorted(set(rows)):
+            if 0 <= row < self.table.rowCount():
+                selection.select(self.table.model().index(row,0),self.table.model().index(row,6))
+        self.table.selectionModel().select(selection,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)
+
+    def text_changed(self, item):
+        if item.column() not in (2,3) or self.worker is not None:
+            return
+        try:
+            self.plan.edit_text(item.row(),'text' if item.column()==2 else 'target_text',item.text())
+        except VoxlateError as exc:
+            self.message.setText(str(exc))
+            self.rendered_cuts=None
+        # Do not replace the active delegate editor during its commit callback.
+        def refresh():
+            if not getattr(self,'closing',False):
+                selected=self.selected_rows()
+                self.render()
+                self.restore_selection(selected)
+        QTimer.singleShot(0,refresh)
+
+    def translate_rows(self, indices=None):
+        if self.worker is not None or self.translator is None:
+            return
+        indices=self.selected_rows() if indices is None else indices
+        if not indices:
+            return
+        pairs=self.plan.pairs
+        sentences=[dict(index=i,start=pairs[i][0],end=pairs[i][1],text=self.plan.content(i)['text']) for i in indices]
+        context=[self.plan.content(i)['text'] for i in range(len(pairs))]
+        original=self.source.currentIndex()==0
+        self.stop_playback()
+        def complete(result):
+            self.plan.translated(result)
+            self.render()
+            self.restore_selection(indices)
+            skipped=sum(not r['text'].strip() for r in result)
+            self.message.setText(f'已翻译 {len(result)-skipped} 句。' + (f'{skipped} 段无文字，可调整边界后重试。' if skipped else ''))
+        self.run_job(lambda emit: self.translator(sentences,context,original),complete,'正在翻译选中句…')
 
     def focus_block(self, index):
         self.current = self.canvas.current = index
@@ -673,12 +794,10 @@ class SegmentationDialog(QDialog):
         self.scroll.blockSignals(False)
         if hasattr(self,'overview'):
             self.overview.update()
-        self.previous_view.setEnabled(self.canvas.left > self.plan.start+.001)
-        self.next_view.setEnabled(self.canvas.left+self.canvas.span < self.plan.end-.001)
 
     def pan_view(self, step):
         if self.worker is None:
-            self.overview.navigate(self.canvas.left+step*self.canvas.span)
+            self.overview.navigate(self.canvas.left+step*self.canvas.span*.8)
 
     def toggle_video(self, enabled):
         self.video_preview.enable(enabled)
@@ -751,6 +870,10 @@ class SegmentationDialog(QDialog):
         active = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState or getattr(self, 'pending_play', False)
         self.play.setIcon(self.stop_icon if active else self.play_icon)
         self.play.setAccessibleName('停止试听' if active else '播放或停止')
+        if hasattr(self,'table'):
+            for row,pair in enumerate(self.plan.pairs):
+                if (item:=self.table.item(row,4)) is not None:
+                    item.setIcon(self.stop_icon if active and self.preview_range==pair else self.play_icon)
         self.sync_video(force=True)
 
     def stop_playback(self):
@@ -851,6 +974,7 @@ class SegmentationDialog(QDialog):
         self.accept()
 
     def done(self, result):
+        self.closing = True
         self.detail_timer.stop()
         self.video_timer.stop()
         self.video_preview.shutdown()

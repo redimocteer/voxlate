@@ -430,7 +430,7 @@ class MainWindow(QMainWindow):
         self.role_manager_button = self.button('角色管理…', self.manage_roles)
         voice_row.addWidget(self.role_manager_button)
         self.full_segmentation_button = self.button('手动分句...', self.open_full_segmentation)
-        self.full_segmentation_button.setToolTip('分离后可用。带入已有句子边界；尚未识别时从空白开始，应用前自动备份。')
+        self.full_segmentation_button.setToolTip('分离后可用。带入已有句子边界；尚未识别时从空白开始。')
         voice_row.addWidget(self.full_segmentation_button)
         voice_row.addStretch()
         self.segmentation_range = None
@@ -1962,7 +1962,7 @@ class MainWindow(QMainWindow):
             return
         if not self.save_translations():
             return
-        from .segmentation import apply_segmentation, segmentation_needs_models
+        from .segmentation import apply_segmentation, segmentation_needs_models, preview_translations
         from .paired_segments import PairedSegmentPlan
         from .segmentation_dialog import SegmentationDialog, cached_waveform, waveform_peaks
         from .app_settings import player_volume, save_player_volume
@@ -2007,9 +2007,13 @@ class MainWindow(QMainWindow):
                     if full:
                         return [waveform_peaks(track, start=start, end=end) for track in (original, vocals)]
                     return [cached_waveform(track, path.parent, start, end) for track in (original, vocals)]
+                def translate_selection(sentences, context, use_original):
+                    return preview_translations(path, expected, cfg, sentences, context=context,
+                        use_original=use_original, tts_session=self.tts_session)
                 dialog = SegmentationDialog(project, first, last, original, vocals, waves,
                     blocks=blocks, volume=player_volume(self.data_dir),
-                    load_waves=load_waves, parent=self, full=full, overview_waves=overview)
+                    load_waves=load_waves, parent=self, full=full, overview_waves=overview,
+                    translate_selection=translate_selection)
                 dialog.source.setCurrentIndex(0 if original_selected else 1)
                 dialog.volumeChanged.connect(lambda volume: save_player_volume(self.data_dir, volume))
                 accepted = dialog.exec() == QDialog.DialogCode.Accepted

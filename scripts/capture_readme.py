@@ -134,14 +134,17 @@ def main():
             deadline=time.monotonic()+5
             while not dialog.video_preview.video.videoSink().videoFrame().isValid() and time.monotonic()<deadline:
                 app.processEvents(); time.sleep(.02)
-        editor = SegmentationDialog(project, 0, 3, audio, audio, [peaks, peaks], parent=window)
+        def synthetic_translation(rows, context, use_original):
+            return [dict(row,target_text='示例译文。') for row in rows]
+        editor = SegmentationDialog(project, 0, 3, audio, audio, [peaks, peaks], parent=window,
+            translate_selection=synthetic_translation)
         editor.select_block(1)
         editor.show(); wait_video(editor)
         capture(editor, 'segmentation.png')
         editor.close()
 
         full_editor = SegmentationDialog(project, 0, len(project['segments'])-1,
-            audio, audio, [peaks, peaks], parent=window, full=True)
+            audio, audio, [peaks, peaks], parent=window, full=True,translate_selection=synthetic_translation)
         full_editor.plan.delete_sentences(range(len(full_editor.plan.pairs)))
         for start, end in ((1,3.1),(3.8,6.2),(7.8,9.2),(9.5,11),(11.7,14),(15,18),(22,25)):
             full_editor.plan.add_sentence(start,end)
