@@ -18,7 +18,7 @@
 - `THIRD_PARTY_SOURCES.json`：对应上游源码归档的 URL、文件名与 SHA-256。
 - 同版本依赖源码附件：提供已收集的上游源码；用户无需下载此附件即可运行。
 
-对应源码从本版本 [Release 附件](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.2)下载 `Voxlate-v0.1.0-beta.2-third-party-sources.zip`，无需注册、付费或联系维护者。内含未经 Voxlate 修改的 Qt 6.8.3（qtbase、qtdeclarative、qtmultimedia、qtsvg、qtimageformats）、PySide/Shiboken 6.8.3 和 FFmpeg 7.1 的完整上游源码归档与构建文件。
+对应源码从本版本 [Release 附件](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.3)下载 `Voxlate-v0.1.0-beta.3-third-party-sources.zip`，无需注册、付费或联系维护者。内含未经 Voxlate 修改的 Qt 6.8.3（qtbase、qtdeclarative、qtmultimedia、qtsvg、qtimageformats）、PySide/Shiboken 6.8.3 和 FFmpeg 7.1 的完整上游源码归档与构建文件。
 
 播放器 FFmpeg 7.1 使用上游 PySide6 wheel 的构建，库报告 LGPL 2.1-or-later，配置如下：
 

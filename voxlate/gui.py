@@ -408,7 +408,7 @@ class MainWindow(QMainWindow):
         voice_row = QHBoxLayout()
         voice_row.addWidget(QLabel('音色参考'))
         self.uniform_voice = QRadioButton('统一音色')
-        self.individual_voice = QRadioButton('逐句音色')
+        self.individual_voice = QRadioButton('逐句音色（推荐）')
         self.role_voice = QRadioButton('分角色音色')
         self.uniform_voice.setToolTip('适合单人')
         self.individual_voice.setToolTip('适合多人')
@@ -499,6 +499,7 @@ class MainWindow(QMainWindow):
         self.export_button.setEnabled(False)
         actions.addWidget(self.export_button)
         self.one_click_button = self.button('一键完成', lambda: self.start_pipeline('auto'), primary=True)
+        self.one_click_button.setToolTip('依次完成分离、自动分句、翻译、配音和导出；已有有效结果会复用。')
         actions.addWidget(self.one_click_button)
         self.cancel_button = self.button("停止", self.cancel_task, lock=False)
         self.cancel_button.setEnabled(False)
@@ -1856,6 +1857,8 @@ class MainWindow(QMainWindow):
         if not self.confirm_discard():
             self.video.setText(self.selected_video)
             return False
+        self.set_status('正在读取视频…')
+        self.activity.repaint()
         self.stop_sentence_audio()
         self.tts_session.close('切换视频')
         self.translation_session.close('切换视频')
@@ -1876,6 +1879,8 @@ class MainWindow(QMainWindow):
         self.project_path = self.default_project_path(video)
         if self.project_path.exists():
             self.load_project(self.project_path)
+        elif self.status_message == '正在读取视频…':
+            self.set_status('未发现已有项目，可以开始分离。')
         self.refresh_voice_fields()
         self.tabs.setCurrentIndex(0)
         return True
@@ -1935,6 +1940,12 @@ class MainWindow(QMainWindow):
             self.load_project(Path(path))
 
     def load_project(self, path, project=None):
+        show_loading = self.task is None
+        if show_loading:
+            self.set_status('正在载入项目…')
+            # Paint before synchronous file validation/table population. Do not
+            # process user events here: a second drop must not interrupt loading.
+            self.activity.repaint()
         self.segmentation_range = None
         self.table.button_range = None
         self.table.clearSelection()
@@ -2002,7 +2013,11 @@ class MainWindow(QMainWindow):
                 self.update_sentence_style(row)
             self.dirty = False
             self.restore_voice_selection()
+            if show_loading:
+                self.set_status(f"项目已载入：{len(project['segments'])} 句。")
         except (OSError, ValueError, KeyError, TypeError, VoxlateError) as exc:
+            if show_loading:
+                self.set_status('项目载入失败。')
             QMessageBox.warning(self, "项目无法打开", str(exc))
         finally:
             self.table.blockSignals(False)
@@ -2245,6 +2260,29 @@ class MainWindow(QMainWindow):
                 self.notify('退出时未能保存项目：' + str(exc))
             return False
 
+    def choose_translation_scope(self):
+        return self.choose_processing_scope('翻译范围',
+            '补全空白会保留已有译文；全部重译会覆盖。\n两者均包含已舍弃的句子。',
+            '仅补全空白', '全部重译')
+
+    def choose_dubbing_scope(self):
+        return self.choose_processing_scope('配音范围',
+            '补全缺失或失效配音，或覆盖已有配音。\n仅处理当前音色方案的已选句子。',
+            '仅补全缺失', '全部重配')
+
+    def choose_processing_scope(self, title, message, missing_label, overwrite_label):
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(title)
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setText(message)
+        missing = dialog.addButton(missing_label, QMessageBox.ButtonRole.AcceptRole)
+        overwrite = dialog.addButton(overwrite_label, QMessageBox.ButtonRole.DestructiveRole)
+        cancel = dialog.addButton('取消', QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(missing)
+        dialog.setEscapeButton(cancel)
+        dialog.exec()
+        return 'missing' if dialog.clickedButton() is missing else 'all' if dialog.clickedButton() is overwrite else None
+
     def start_pipeline(self, stop_after, *, sentence_ids=None, force_tts=False):
         stop_after = 'export' if stop_after is None else stop_after
         if self.task is not None:
@@ -2273,6 +2311,7 @@ class MainWindow(QMainWindow):
             if Path(existing["input"]).resolve() != video:
                 self.project_path = None
         force_translation = stop_after == 'translate'
+        translate_missing_only = False
         force_recognition = stop_after == 'recognize'
         segments = (self.project or {}).get('segments', [])
         active = [s for s in segments if s.get('enabled', True)
@@ -2280,13 +2319,24 @@ class MainWindow(QMainWindow):
         message = None
         if stop_after == 'recognize' and (segments or (self.project or {}).get('manual_edits')):
             manual = bool((self.project or {}).get('manual_edits')) or any(s.get('manual_boundary') for s in segments)
-            message = ('自动分句将覆盖当前手动分句，继续？' if manual else '重新识别整个视频？') + '\n分句、选弃和译文修改将被自动结果替换，需重新配音。\n原项目会自动备份。'
+            message = '将覆盖手动分句、选弃和译文，需重新配音。' if manual else '重新识别将重置分句、选弃和译文，需重新配音。'
         elif stop_after == 'translate' and any(s.get('target_text', '').strip() for s in segments):
-            message = '已有译文，重新翻译？\n包括已舍弃句子；保留原文、分句和选弃状态。\n已选句子译文变化后需重新配音，原项目会自动备份。'
+            scope = self.choose_translation_scope()
+            if scope is None:
+                return
+            translate_missing_only = scope == 'missing'
+            force_translation = not translate_missing_only
+            if translate_missing_only and all(s.get('target_text', '').strip() for s in segments):
+                self.set_status('译文已完整，无需补全。')
+                return
         elif stop_after == 'dub' and sentence_ids is None and any(audio_exists(s.get('tts_audio')) for s in active):
-            mode_name = {'uniform': '统一音色', 'individual': '逐句音色', 'roles': '分角色音色'}[self.selected_voice_mode()]
-            message = f'已有{mode_name}配音，重新生成并覆盖？\n仅替换当前音色方案的已选句子，其他音色方案保留。'
-            force_tts = True
+            scope = self.choose_dubbing_scope()
+            if scope is None:
+                return
+            force_tts = scope == 'all'
+            if not force_tts and dubbing_ready(self.project, self.cfg):
+                self.set_status('配音已完整，无需补全。')
+                return
         if message and QMessageBox.question(self, '确认覆盖', message,
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
@@ -2342,6 +2392,7 @@ class MainWindow(QMainWindow):
             result = VideoDubPipeline(cfg, tts_session=self.tts_session, translation_session=self.translation_session).process(video, output, work, None, None if stop_after in ('export', 'auto') else stop_after,
                 require_translated=stop_after == 'dub', auto_reference=True, voice_mode=mode, reference_sentence_id=reference_id, export_only=stop_after == 'export',
                 sentence_ids=sentence_ids, force_tts=force_tts, force_translation=force_translation,
+                translate_missing_only=translate_missing_only,
                 force_recognition=force_recognition, recognition_only=stop_after == 'recognize',
                 translate_only=stop_after == 'translate', auto_export=stop_after == 'auto')
             return {"path": str(result), "checked_resources": results}

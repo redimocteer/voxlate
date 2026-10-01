@@ -81,7 +81,12 @@ def collect_notices(archive, destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--skip-build', action='store_true')
+    parser.add_argument('--build-dir', type=Path, help='Existing clean package; requires --skip-build')
+    parser.add_argument('--output-dir', type=Path, help='Parent directory for the new version')
+    parser.add_argument('--source-cache', type=Path, help='Cache of upstream source archives')
     args = parser.parse_args()
+    if args.build_dir and not args.skip_build:
+        parser.error('--build-dir requires --skip-build')
     metadata = json.loads((ROOT / 'docs/GITHUB_METADATA.json').read_text(encoding='utf-8'))
     tag = metadata['release_tag']
     if not re.fullmatch(r'v\d+\.\d+\.\d+(?:-[a-z0-9.]+)?', tag):
@@ -90,24 +95,29 @@ def main():
                         (ROOT/'voxlate/__init__.py').read_text(encoding='utf-8')).group(1)
     if tag != 'v' + version or version.endswith('-dev'):
         raise ValueError('Release metadata and application version must match a new release; do not reuse a milestone tag')
-    output = ROOT / 'dist/releases' / tag
+    output = (args.output_dir or ROOT / 'dist/releases').resolve() / tag
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f'Release artifacts already exist: {output}; use a new version')
     if importlib.metadata.version('PySide6-Essentials') != QT:
         raise ValueError('Update source manifest before building a different Qt version')
-    build = ROOT / 'dist/beta/voxlate'
+    # Never rebuild or package a daily-use directory that may contain projects.
+    build = (args.build_dir or ROOT / 'build/releases' / tag / 'voxlate').resolve()
     if not args.skip_build:
+        if build.exists() and any(build.iterdir()):
+            raise FileExistsError('Build staging directory is not empty; review it before rebuilding')
         env = dict(os.environ, VOXLATE_RELEASE_BUILD='1')
         subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm',
-                        '--distpath', str(ROOT / 'dist/beta'), '--workpath',
-                        str(ROOT / 'build/beta'), str(ROOT / 'voxlate.spec')],
+                        '--distpath', str(build.parent), '--workpath',
+                        str(ROOT / 'build/releases' / tag / 'work'), str(ROOT / 'voxlate.spec')],
                        cwd=ROOT, env=env, check=True)
     if not (build / 'voxlate.exe').is_file():
         raise FileNotFoundError('Build the application first')
+    from check_public_package import audit_release_tree
+    audit_release_tree(build)
     forbidden = {'qtvirtualkeyboardplugin.dll', 'qt6virtualkeyboard.dll', 'qpdf.dll', 'qt6pdf.dll'}
     if any(p.name.lower() in forbidden for p in build.rglob('*')):
         raise ValueError('Unused Qt plugins remain; rebuild using the current spec')
-    cache = ROOT / '.build-deps/release-sources'
+    cache = (args.source_cache or ROOT / '.build-deps/release-sources').resolve()
     cache.mkdir(parents=True, exist_ok=True)
     with ThreadPoolExecutor(max_workers=3) as pool:
         jobs = [pool.submit(download, url, cache / name) for name, url in SOURCES.items()]
@@ -126,7 +136,7 @@ def main():
         'Voxlate ' + tag + '\n\n完整解压后双击 voxlate.exe。请保留 _internal 文件夹。\n'
         '首次进入 资源配置 → 一键准备；需 NVIDIA CUDA 显卡及数十 GB 磁盘空间。\n'
         '最低内存／显存未系统验证，请先试短片。\n'
-        '拖入视频 → 选音轨和语言 → 一键导出，或按四步逐句校对。\n'
+        '拖入视频 → 选音轨和语言 → 一键完成，或按五步逐句校对。\n'
         '详情见 README.md 和 docs/DOWNLOAD.md。\n\n'
         '本应用使用 LGPL 许可的 Qt/PySide6/Shiboken，许可正文在 licenses/。\n'
         '您可以替换兼容运行库；说明与对应源码见 docs/BINARY_DISTRIBUTION.md。\n'
