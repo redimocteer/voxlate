@@ -76,11 +76,12 @@ class VideoPlayer(QDialog):
     volumeChanged = Signal(int)
 
     def __init__(self, path, parent=None, reference_range=None, select_reference=True, original_audio=None,
-                 reference_guard=None, volume=80):
+                 reference_guard=None, volume=80, reference_min_seconds=3):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.Window)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.reference_guard = reference_guard
+        self.reference_min_seconds = reference_min_seconds
         self.setWindowTitle(Path(path).name)
         self.resize(920, 650)
         self.selected_range = None
@@ -258,8 +259,8 @@ class VideoPlayer(QDialog):
 
     def valid_range(self):
         start, end = [value / 1000 for value in self.seek.selection] if self.seek.selection else (0, 0)
-        if not 3 <= end - start <= 15 or end * 1000 > self.player.duration():
-            QMessageBox.information(self, "调整音色选段", "请选择视频内连续的 3–15 秒，终点须晚于起点。")
+        if not self.reference_min_seconds <= end - start <= 15 or end * 1000 > self.player.duration():
+            QMessageBox.information(self, "调整音色选段", f"请选择文件内连续的 {self.reference_min_seconds:g}–15 秒，终点须晚于起点。")
             return None
         return [start, end]
 
@@ -273,7 +274,7 @@ class VideoPlayer(QDialog):
         self.sync_original(force=True)
 
     def selection_changed(self, selected):
-        valid = selected is not None and 3000 <= selected[1] - selected[0] <= 15000
+        valid = selected is not None and self.reference_min_seconds*1000 <= selected[1] - selected[0] <= 15000
         if selected:
             start, end = selected
             self.range_label.setText(f"{timestamp(round(start / 1000) * 1000)} – {timestamp(round(end / 1000) * 1000)}")

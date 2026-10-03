@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
+import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -43,9 +45,26 @@ def read_json(path):
 def write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temp, path)
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    # Each writer owns its temporary file, beside the destination. Windows can
+    # briefly deny replacement while a reader or scanner holds the old file.
+    temp = path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
+    try:
+        with temp.open('x', encoding='utf-8') as stream:
+            stream.write(payload)
+        for attempt in range(6):
+            try:
+                os.replace(temp, path)
+                break
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(.02 * 2**attempt)
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass  # Cleanup must not mask a failed save or undo a successful one.
 
 
 def digest(*items):

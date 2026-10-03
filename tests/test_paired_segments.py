@@ -2,6 +2,7 @@ import time
 import threading
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from voxlate.common import VoxlateError
 from voxlate.paired_segments import PairedSegmentPlan
@@ -104,11 +105,12 @@ class PairPlanTests(unittest.TestCase):
         self.assertEqual(result['segments'][1]['source_text'],'Third.')
 
     def test_limit_and_out_of_range_cut_protection(self):
-        rows=[dict(id=i+1,start=i*3.,end=i*3.+1,source_text='Synthetic',target_text='') for i in range(11)]
-        project=dict(duration=34,segments=rows)
-        with self.assertRaisesRegex(VoxlateError,'10 句'):
-            PairedSegmentPlan(project,0,10)
-        plan=PairedSegmentPlan(project,0,9)
+        from voxlate.segmentation import MAX_FULL_SENTENCES
+        rows=[dict(id=i+1,start=i*3.,end=i*3.+1,source_text='Synthetic',target_text='') for i in range(MAX_FULL_SENTENCES+1)]
+        project=dict(duration=len(rows)*3.,segments=rows)
+        with self.assertRaisesRegex(VoxlateError,'5000 句'):
+            PairedSegmentPlan(project,0,MAX_FULL_SENTENCES)
+        plan=PairedSegmentPlan(project,0,MAX_FULL_SENTENCES-1)
         previous=plan.snapshot()
         with self.assertRaises(VoxlateError):
             plan.extend_sentence('end')
@@ -121,12 +123,107 @@ class PairPlanTests(unittest.TestCase):
         self.assertGreaterEqual(plan.cuts[0],plan.start)
         self.assertLessEqual(plan.cuts[1],plan.cuts[2])
 
+    def test_large_local_selection_restores_draft_and_preserves_outer_sentences(self):
+        project=dict(duration=1300, segments=[dict(id=i+1,start=i*3.,end=i*3.+1,
+            source_text=f'Synthetic {i}',target_text=f'译文 {i}',enabled=True) for i in range(402)])
+        plan=PairedSegmentPlan(project,1,400)
+        self.assertFalse(plan.full)
+        self.assertTrue(plan.paged_waveform)
+        self.assertEqual(len(plan.pairs),400)
+        self.assertGreater(plan.end-plan.start,600)
+        plan.validate()
+        restored=PairedSegmentPlan(project,1,400,plan.blocks)
+        self.assertEqual(restored.pairs,plan.pairs)
+        plan.delete_sentence(20)
+        plan.validate()
+        rows={(s['start'],s['end']):s for s in project['segments']}
+        texts=[rows[(b['start'],b['end'])]['source_text'] if not b.get('omit_row') else '' for b in plan.blocks]
+        translated=[rows[(b['start'],b['end'])]['target_text'] if not b.get('omit_row') else '' for b in plan.blocks]
+        result,_=replace_segments(project,plan.blocks,texts,translated)
+        self.assertEqual(len(result['segments']),401)
+        for old,new in ((project['segments'][0],result['segments'][0]),(project['segments'][-1],result['segments'][-1])):
+            for key in ('start','end','source_text','target_text','enabled'):
+                self.assertEqual(old[key],new[key])
+
+    def test_local_single_sentence_duration_protection_remains(self):
+        plan=PairedSegmentPlan(dict(duration=1500,segments=[dict(id=1,start=0,end=601,source_text='Synthetic')]),0,0)
+        with self.assertRaisesRegex(VoxlateError,'单句最多'):
+            plan.validate()
+
 
 class PairDialogTests(unittest.TestCase):
+    def test_cancel_close_and_escape_confirm_only_unapplied_edits(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from voxlate.segmentation_dialog import SegmentationDialog
+        with TestDirectory() as folder:
+            audio=Path(folder)/'synthetic.wav'; tone(audio,1)
+            project=dict(duration=3,segments=[dict(id=1,start=0,end=1,source_text='Hello')])
+            wave=dict(peaks=[.1]*30,step=.1,start=0,end=3,duration=3)
+            for full in (False,True):
+                dialog=SegmentationDialog(project,0,0,audio,audio,(wave,wave),full=full)
+                dialog.show(); self.app.processEvents()
+                with patch.object(dialog,'confirm_discard',return_value=False) as confirm:
+                    dialog.plan.edit_text(0,'text','Changed')
+                    dialog.reject(); self.assertTrue(dialog.isVisible())
+                    dialog.close(); self.assertTrue(dialog.isVisible())
+                    QTest.keyClick(dialog,Qt.Key.Key_Escape); self.assertTrue(dialog.isVisible())
+                    self.assertEqual(confirm.call_count,3)
+                    dialog.plan.undo()
+                    dialog.reject(); self.assertFalse(dialog.isVisible())
+                    self.assertEqual(confirm.call_count,3)
+                dialog.deleteLater(); self.app.processEvents()
+            dialog=SegmentationDialog(project,0,0,audio,audio,(wave,wave))
+            dialog.plan.edit_text(0,'target_text','译文')
+            with patch.object(dialog,'confirm_discard',return_value=True) as confirm:
+                dialog.reject(); confirm.assert_called_once()
+            dialog.deleteLater(); self.app.processEvents()
+
+    def setUp(self):
+        self.discard = patch('voxlate.segmentation_dialog.SegmentationDialog.confirm_discard', return_value=True)
+        self.discard.start()
+        self.addCleanup(self.discard.stop)
+
     @classmethod
     def setUpClass(cls):
         from PySide6.QtWidgets import QApplication
         cls.app=QApplication.instance() or QApplication([])
+
+    def test_long_local_selection_loads_detail_for_visible_window(self):
+        from voxlate.segmentation_dialog import SegmentationDialog
+        with TestDirectory() as folder:
+            audio=Path(folder)/'synthetic.wav'; tone(audio,1)
+            project=dict(duration=1800,segments=[dict(id=i+1,start=i*30+10,end=i*30+12,
+                source_text='Synthetic',target_text='') for i in range(40)])
+            plan=PairedSegmentPlan(project,2,35)
+            wave=dict(peaks=[.1]*3000,step=.01,start=plan.start,end=plan.start+30,duration=1800)
+            overview=dict(peaks=[.1]*1020,step=1,start=plan.start,end=plan.end,duration=1800)
+            calls=[]
+            def load(start,end):
+                calls.append((start,end))
+                data=dict(peaks=[.1]*100,step=.01,start=start,end=end,duration=1800)
+                return [data,data]
+            dialog=SegmentationDialog(project,2,35,audio,audio,[wave,wave],
+                overview_waves=[overview,overview],load_waves=load)
+            try:
+                self.assertFalse(dialog.plan.full)
+                self.assertEqual(dialog.canvas.span,30)
+                self.assertEqual(dialog.table.rowCount(),34)
+                dialog.canvas.left=plan.start+300
+                dialog.load_detail()
+                deadline=time.monotonic()+5
+                while dialog.detail_worker is not None and time.monotonic()<deadline:
+                    self.app.processEvents(); time.sleep(.01)
+                self.assertIsNone(dialog.detail_worker)
+                self.assertEqual(len(calls),1)
+                self.assertLessEqual(calls[0][0],dialog.canvas.left)
+                self.assertGreaterEqual(calls[0][1],dialog.canvas.left+30)
+                self.assertLess(calls[0][1]-calls[0][0],60)
+                dialog.plan.validate()
+                self.assertGreater(dialog.export_blocks()[0]['start'],0)
+                self.assertLess(dialog.export_blocks()[-1]['end'],project['duration'])
+            finally:
+                dialog.reject(); dialog.deleteLater(); self.app.processEvents()
 
     def wait_job(self, dialog):
         deadline=time.monotonic()+5

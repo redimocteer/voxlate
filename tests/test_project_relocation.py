@@ -68,6 +68,14 @@ class ProjectRelocationTests(unittest.TestCase):
         with patch('voxlate.project_storage.file_hash', side_effect=AssertionError('unneeded hash')):
             self.assertIs(relocate_saved_project(result, self.path), result)
 
+    def test_imported_external_voice_moves_with_project_without_changing_identity(self):
+        from voxlate.dubbing_state import voice_key
+        project = dict(self.project, voice_mode='external', external_voice=dict(audio=str(self.audio), key='synthetic-key'))
+        write_json(self.path, project)
+        result = relocate_saved_project(project, self.path)
+        self.assertEqual(result['external_voice']['audio'], str(self.path.parent/'cache'/'clip.wav'))
+        self.assertEqual(voice_key(result, {'tts': {}}), voice_key(project, {'tts': {}}))
+
     def test_wrong_or_missing_video_never_changes_saved_project(self):
         before = self.path.read_bytes()
         self.new.write_bytes(b'different same-name video')

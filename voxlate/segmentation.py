@@ -33,11 +33,11 @@ def interval_blocks(segments, start, end):
 
 
 def validate_blocks(blocks, duration, *, full=False):
-    limit = MAX_FULL_SENTENCES*2+1 if full else MAX_BLOCKS
+    limit = MAX_FULL_SENTENCES*2+1
     if not blocks or len(blocks) > limit:
         raise VoxlateError(f'一次请编辑 1～{limit} 个时间块。')
-    if full and sum(not b.get('omit_row') for b in blocks) > MAX_FULL_SENTENCES:
-        raise VoxlateError(f'全片最多编辑 {MAX_FULL_SENTENCES} 句。')
+    if sum(not b.get('omit_row') for b in blocks) > MAX_FULL_SENTENCES:
+        raise VoxlateError(f'一次最多编辑 {MAX_FULL_SENTENCES} 句。')
     previous = blocks[0]['start']
     for block in blocks:
         start, end = block['start'], block['end']
@@ -51,11 +51,9 @@ def validate_blocks(blocks, duration, *, full=False):
             raise VoxlateError('单块原文最多 1200 字，请进一步分句。')
         if not isinstance(block.get('target_text',''),str) or len(block.get('target_text','')) > 1200:
             raise VoxlateError('单块译文最多 1200 字。')
-        if full and not block.get('omit_row') and end-start > MAX_SPAN:
+        if not block.get('omit_row') and end-start > MAX_SPAN:
             raise VoxlateError('单句最多 10 分钟，请把这句再划短一些。')
         previous = end
-    if not full and blocks[-1]['end']-blocks[0]['start'] > MAX_SPAN:
-        raise VoxlateError('一次最多调整 10 分钟，请分段编辑。')
 
 
 class SegmentPlan:
@@ -149,12 +147,18 @@ def unchanged_segment(project, block):
 
 
 def segmentation_needs_models(project, blocks):
-    return any(b['enabled'] and unchanged_segment(project, b) is None and not (
+    return any(b['enabled'] and (unchanged_segment(project, b) is None or
+        segment_needs_text(unchanged_segment(project, b))) and not (
         b.get('manual_text') and b.get('text','').strip() and
         b.get('manual_translation') and b.get('target_text','').strip()) for b in blocks)
 
 
-def replace_segments(project, blocks, texts, translations, *, full=False):
+def segment_needs_text(row):
+    return bool(row and row.get('enabled', True) and row.get('manual_boundary') and
+                (row.get('pending_recognition') or not row.get('target_text', '').strip()))
+
+
+def replace_segments(project, blocks, texts, translations, *, full=False, allow_pending=False):
     """Renumber display rows while retaining stable voice reference identities."""
     validate_blocks(blocks, project['duration'], full=full)
     if len(texts) != len(blocks) or len(translations) != len(blocks):
@@ -180,12 +184,14 @@ def replace_segments(project, blocks, texts, translations, *, full=False):
             row.setdefault('voice_identity', row['id'])
             new_rows.append(row)
             continue
-        if block['enabled'] and (not text.strip() or not translated.strip()):
+        if block['enabled'] and not allow_pending and (not text.strip() or not translated.strip()):
             raise VoxlateError('有时间块未识别或翻译成功，未修改项目。')
         row = dict(start=block['start'], end=block['end'], enabled=block['enabled'],
-            source_text=text.strip() or '（保留原声）', target_text=translated.strip(), speaker='A',
+            source_text=text.strip() if allow_pending else (text.strip() or '（保留原声）'), target_text=translated.strip(), speaker='A',
             source_lang=project.get('source_lang', 'en'), target_lang='zh', manual_boundary=True,
             voice_identity='manual-'+uuid.uuid4().hex)
+        if allow_pending and not text.strip():
+            row['pending_recognition'] = True
         neighbors = [s for s in touched if s['end'] > row['start'] and s['start'] < row['end']]
         exact = next((s for s in neighbors if abs(s['start']-row['start']) < 1e-6 and abs(s['end']-row['end']) < 1e-6), None)
         if exact:
@@ -340,7 +346,7 @@ def preview_translations(project_path, expected_hash, cfg, sentences, *, context
 
 
 def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original=True, runner=None, full=False,
-                       tts_session=None, translation_session=None):
+                       tts_session=None, translation_session=None, process_text=True):
     """Generate in a private work directory and commit only a complete result."""
     from .pipeline import VideoDubPipeline, project_lock, elapsed_text
     from .project_storage import validate_project_directory
@@ -361,7 +367,8 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
         if any(s['start'] < start-1e-6 or s['end'] > end+1e-6 for s in project['segments']
                if s['end'] > start and s['start'] < end):
             raise VoxlateError('编辑范围与邻句重叠，请将邻句一并纳入。')
-        retained = {i: row for i, block in enumerate(blocks) if (row := unchanged_segment(project, block)) is not None}
+        retained = {i: row for i, block in enumerate(blocks) if (row := unchanged_segment(project, block)) is not None
+                    and not (process_text and segment_needs_text(row))}
         touched = [s for s in project['segments'] if s['end'] > start and s['start'] < end]
         check_cancelled()
         if len(retained) == len(touched) and all(i in retained or b.get('omit_row') for i, b in enumerate(blocks)):
@@ -391,6 +398,8 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
                 texts[index] = block.get('text', '')
             elif block.get('manual_text') and block.get('text', '').strip():
                 texts[index] = block['text'].strip()
+            elif not process_text:
+                continue
             else:
                 if tracks is None:
                     pipeline.work = path.parent
@@ -414,7 +423,7 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
                 texts[item['index']] = text.strip()
         active = [i for i, b in enumerate(blocks) if b['enabled']]
         changed = [i for i in active if i not in retained]
-        pending = [i for i in changed if not translations[i]]
+        pending = [i for i in changed if not translations[i]] if process_text else []
         if pending:
             start, end = blocks[0]['start'], blocks[-1]['end']
             preceding = [s['source_text'] for s in project['segments'] if s['end'] <= start][-2:]
@@ -426,8 +435,11 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
                 raise VoxlateError('分块翻译不完整，原项目保留。')
             for index, text in zip(pending, translated):
                 translations[index] = text
-        result, reference_changed = replace_segments(project, blocks, texts, translations, full=full)
-        if changed:
+        result, reference_changed = replace_segments(project, blocks, texts, translations, full=full, allow_pending=not process_text)
+        for row in result['segments']:
+            if row.get('pending_recognition') and start <= row['start'] and row['end'] <= end:
+                row['recognition_use_original'] = use_original
+        if changed and process_text:
             result['translation_config_key'] = digest(pipeline.cfg['translator'])
         backup = path.parent/'history'/'manual-segments'/work.name/'project.json'
         write_json(backup, project)
@@ -443,6 +455,9 @@ def apply_segmentation(project_path, expected_hash, cfg, blocks, *, use_original
                    (('保留', len(retained)), ('更新', len(changed)), ('删除', deleted)) if count]
         if skipped:
             details.append(f'{len(skipped)} 段无文字，保留原声')
+        waiting = sum(bool(row.get('pending_recognition')) for row in result['segments'])
+        if not process_text and waiting:
+            details.append(f'{waiting} 句待识别，翻译时自动补全')
         elapsed = time.perf_counter()-started
         duration = elapsed_text(elapsed) if elapsed >= 1 else '<1 秒'
         message = f"分句完成：{'，'.join(details)} · 耗时 {duration}"

@@ -1,8 +1,8 @@
 # 下载与安装
 
-当前版本：[v0.1.0-beta.3 · Windows 测试版](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.3)。自动结果仍需校对，请先用短片测试。
+当前版本：[v0.1.0-beta.4 · Windows 测试版](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.4)。自动结果仍需校对，请先用短片测试。
 
-本版新增波形分句编辑、Qwen 续识别、单句参考音色及翻译／配音补缺选择，并改善操作响应。旧版用户退出程序后改用新版即可，沿用原配置和模型；详见[更新说明](RELEASE_NOTES_v0.1.0-beta.3.md)。
+本版新增外部音色、所选句子翻译／配音、仅应用分句及未配音保留原声导出，并修复进度文件占用问题。旧版用户退出程序后改用新版即可，沿用原配置和模型；详见[更新说明](RELEASE_NOTES_v0.1.0-beta.4.md)。
 
 程序包不含模型及外部推理环境。准备这些资源之前，请先阅读[下载选择与上游条款](RESOURCE_DOWNLOADS.md)；不接受的资源不必下载。开发分支新增的逐项下载确认、许可留存及导出说明尚未包含在此旧版 EXE 中。
 
@@ -12,9 +12,9 @@
 
 打开 [Voxlate Releases](https://github.com/redimocteer/voxlate/releases)，查看标有 **Pre-release** 的测试版。
 
-- 普通用户：`Voxlate-v0.1.0-beta.3-windows-x64.zip`。
+- 普通用户：`Voxlate-v0.1.0-beta.4-windows-x64.zip`。
 - 校验文件：`SHA256SUMS.txt`，用于比对下载文件的 SHA-256。
-- `Voxlate-v0.1.0-beta.3-third-party-sources.zip` 是对应依赖源码，运行时无需下载。
+- `Voxlate-v0.1.0-beta.4-third-party-sources.zip` 是对应依赖源码，运行时无需下载。
 - `Source code (zip)` / `Source code (tar.gz)` 是源码，不能直接双击运行。
 
 ## 第一次运行

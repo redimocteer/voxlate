@@ -83,6 +83,8 @@ def relocated_project(project, path):
     for field in ('speaker_reference', 'output'):
         if field in result:
             result[field] = rebase(result[field])
+    if isinstance(result.get('external_voice'), dict) and 'audio' in result['external_voice']:
+        result['external_voice']['audio'] = rebase(result['external_voice']['audio'])
     for field in ('manual_edits', 'recognition_history', 'translation_history'):
         for record in result.get(field, []):
             if 'backup' in record:

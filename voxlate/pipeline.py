@@ -6,6 +6,7 @@ import json
 import copy
 import math
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -68,7 +69,7 @@ def validate_segments(segments, duration):
             raise VoxlateError(f"第 {ident} 句时间越界、重叠或未按时间排序")
         if segment.get("speaker", "A") != "A":
             raise VoxlateError("首版只支持单人 Speaker A")
-        if not isinstance(segment["source_text"], str) or not segment["source_text"].strip():
+        if not isinstance(segment["source_text"], str) or (not segment["source_text"].strip() and segment.get('pending_recognition') is not True):
             raise VoxlateError(f"第 {ident} 句原文为空")
         if not isinstance(segment.get("target_text", ""), str):
             raise VoxlateError(f"第 {ident} 句译文必须是字符串")
@@ -231,7 +232,8 @@ class VideoDubPipeline:
     def process(self, video_path, output_path, work_dir, speaker_ref=None, stop_after=None, reference_range=None,
                 *, require_translated=False, auto_reference=None, export_only=False, sentence_ids=None, force_tts=False,
                 voice_mode=None, reference_sentence_id=None, force_translation=False, force_recognition=False,
-                translate_only=False, auto_export=False, recognition_only=False, translate_missing_only=False):
+                translate_only=False, auto_export=False, recognition_only=False, translate_missing_only=False,
+                force_separation=False, external_voice=None, allow_missing_dubbing=False):
         video, output = Path(video_path).resolve(), Path(output_path).resolve()
         self.work = Path(work_dir).resolve()
         if not video.is_file():
@@ -247,11 +249,17 @@ class VideoDubPipeline:
         self.require_translated = require_translated
         self.auto_reference = auto_reference
         self.export_only = export_only
+        self.allow_missing_dubbing = allow_missing_dubbing
+        if allow_missing_dubbing and not export_only:
+            raise VoxlateError('保留未配音原声仅适用于导出步骤')
         self.sentence_ids = set(sentence_ids) if sentence_ids is not None else None
         self.force_tts = force_tts
         self.force_translation = force_translation
         self.translate_missing_only = translate_missing_only
         self.force_recognition = force_recognition
+        self.force_separation = force_separation
+        if force_separation and (stop_after != 'separate' or recognition_only or translate_only or auto_export or export_only):
+            raise VoxlateError('重新分离仅能用于分离步骤')
         self.translate_only, self.auto_export = translate_only, auto_export
         self.recognition_only = recognition_only
         if recognition_only and (stop_after != 'recognize' or auto_export or export_only):
@@ -268,12 +276,15 @@ class VideoDubPipeline:
         if force_translation and stop_after != 'translate':
             raise VoxlateError('重新翻译仅能用于翻译步骤')
         self.voice_mode, self.reference_sentence_id = voice_mode, reference_sentence_id
+        self.external_voice = copy.deepcopy(external_voice)
         if voice_mode is not None:
-            if voice_mode not in ('uniform', 'individual', 'roles'):
+            if voice_mode not in ('uniform', 'individual', 'roles', 'external'):
                 raise VoxlateError('音色模式无效')
             self.cfg['tts']['emotion_reference'] = True
-        if (self.sentence_ids is not None or force_tts) and stop_after != 'dub':
-            raise VoxlateError('单句配音仅能用于生成配音步骤')
+        if force_tts and stop_after != 'dub':
+            raise VoxlateError('重新配音仅能用于生成配音步骤')
+        if self.sentence_ids is not None and stop_after != 'dub' and not translate_only:
+            raise VoxlateError('所选句子仅能用于翻译或配音步骤')
         with project_lock(self.work):
             started = time.perf_counter()
             label = '一键导出' if auto_export else ('导出视频' if export_only else
@@ -299,7 +310,7 @@ class VideoDubPipeline:
             "input_hash": input_key, "input": str(video), "audio_track": selected_track(self.cfg), "stages": {}, "segments": []}
         self.project = relocated_project(self.project, project_path)
         previous_project = copy.deepcopy(self.project) if self.force_recognition and project_path.exists() else None
-        self.defer_project_save = previous_project is not None
+        self.defer_project_save = previous_project is not None or self.force_separation
         if self.project.get("input_hash") != input_key or self.project.get("schema_version") != 1:
             raise VoxlateError("项目与视频或版本不匹配，请指定新的 --work-dir")
         if self.project.get("source_lang", "en") != self.source_lang:
@@ -311,6 +322,8 @@ class VideoDubPipeline:
             self.project.update(voice_mode=self.voice_mode, reference_sentence_id=self.reference_sentence_id)
             self.project['reference_auto_recommend'] = self.reference_sentence_id is None
             self.project.pop('reference_auto_longest', None)
+        if self.external_voice is not None:
+            self.project['external_voice'] = self.external_voice
         if self.project.get('voice_mode') == 'roles':
             ensure_roles(self.project)
             validate_roles(self.project, allow_legacy_names=True)
@@ -384,7 +397,9 @@ class VideoDubPipeline:
         if not self.recognition_only:
             self.stage("extract", extract_key, [audio],
                        lambda: self.media.extract(video, audio, duration, track))
-        if not self.recognition_only:
+        if self.force_separation:
+            self.reseparate(audio, stems_root, sep_key, prepared_key)
+        elif not self.recognition_only:
             self.stage("separate", sep_key, [vocals, background],
                        lambda: self.runner("separator", {"audio": str(audio), "directory": str(self.work / "separated")}))
         self.project['prepared_audio_key'] = prepared_key
@@ -497,9 +512,37 @@ class VideoDubPipeline:
         previous = read_json(project_path)
         config_key = digest(self.cfg['translator'])
         changed = self.project.get('translation_config_key') not in (None, config_key)
-        pending = [s for s in segments if
+        chosen = [s for s in segments if self.sentence_ids is None or s['id'] in self.sentence_ids]
+        if self.sentence_ids is not None and (not self.sentence_ids or {s['id'] for s in chosen} != self.sentence_ids):
+            raise VoxlateError('所选句子不存在，请重新选择。')
+        missing_sources = [s for s in chosen if s.get('pending_recognition') and not s['source_text'].strip()]
+        if missing_sources:
+            folder = self.work/'.temp'/'manual-recognition'/uuid.uuid4().hex
+            if not folder.resolve().is_relative_to(self.work.resolve()):
+                raise VoxlateError('识别缓存目录指向项目外。')
+            original, vocals, _ = self.cached_media()
+            inputs = []
+            for index, row in enumerate(missing_sources):
+                check_cancelled()
+                clip = folder/f'{index}.wav'
+                self.media.trim(original if row.get('recognition_use_original', True) else vocals,
+                    clip, row['start'], row['end']-row['start'])
+                inputs.append(dict(index=index, audio=str(clip)))
+            LOG.info('补识别手动分句：%d 句', len(inputs))
+            texts = self.runner('asr', dict(manual_blocks=inputs))
+            if not isinstance(texts, list) or len(texts) != len(inputs) or any(not isinstance(text, str) for text in texts):
+                raise VoxlateError('分块识别结果不完整，原项目保留。')
+            for row, text in zip(missing_sources, texts):
+                row['source_text'] = text.strip()
+                if text.strip():
+                    row.pop('pending_recognition', None)
+                    row.pop('recognition_use_original', None)
+                else:
+                    row.update(enabled=False, target_text='')
+                    LOG.info('第 %s 句未识别到文字，保留原声。', row['id'])
+        pending = [s for s in chosen if s['source_text'].strip() and (
             not s.get('target_text', '').strip() or
-            (not self.translate_missing_only and (self.force_translation or changed))]
+            (not self.translate_missing_only and (self.force_translation or changed)))]
         if pending:
             LOG.info('翻译：%d 句', len(pending))
             stamp = digest(CACHE_VERSION, self.cfg['translator'], model_stamp(self.cfg['translator']['model_path']))
@@ -596,6 +639,53 @@ class VideoDubPipeline:
         return self.generate_dubbing(video, output, speaker_ref, 'dub',
             self.project['stages']['separate']['key'], audio, vocals, background)
 
+    def reseparate(self, audio, stems_root, sep_key, prepared_key):
+        # Produce both stems before touching the current pair. All scratch files
+        # stay in this video's project; rollback also covers commit/save failures.
+        revision = uuid.uuid4().hex
+        scratch = self.work/'.temp'/('separation-' + revision)
+        incoming = scratch/'new'/self.cfg['separator']['model']/audio.stem
+        backup = scratch/'previous'
+        moved_old = installed = False
+        started = time.perf_counter()
+        previous = copy.deepcopy(self.project)
+        try:
+            scratch.mkdir(parents=True)
+            self.runner('separator', dict(audio=str(audio), directory=str(scratch/'new')))
+            if not all(valid_wav(incoming/name) for name in ('vocals.wav', 'no_vocals.wav')):
+                raise VoxlateError('分离未生成完整音频，原结果保留。')
+            check_cancelled()
+            if stems_root.exists():
+                stems_root.replace(backup)
+                moved_old = True
+            stems_root.parent.mkdir(parents=True, exist_ok=True)
+            incoming.replace(stems_root)
+            installed = True
+            self.project['stages']['separate'] = dict(key=sep_key, seconds=round(time.perf_counter()-started, 3))
+            for stage in ('reference', 'mix', 'mux'):
+                self.project['stages'].pop(stage, None)
+            self.project.update(separation_revision=revision, prepared_audio_key=prepared_key,
+                                separator_model=self.cfg['separator']['model'])
+            for segment in self.project['segments']:
+                segment.pop('source_audio', None)
+                segment.pop('clip_key', None)
+            self.defer_project_save = False
+            self.save()
+        except Exception:
+            self.project = previous
+            self.defer_project_save = True
+            if installed:
+                stems_root.replace(incoming)
+            if moved_old:
+                backup.replace(stems_root)
+            raise
+        finally:
+            # A failed rollback must never discard the only copy of old stems.
+            if scratch.exists() and not backup.exists():
+                shutil.rmtree(scratch, ignore_errors=True)
+        if backup.exists():
+            shutil.rmtree(scratch, ignore_errors=True)
+
     def analyze_reference_voices(self, vocals, *, refresh=False):
         weights = Path(self.cfg['tts']['model_path'])/'hf_cache'/'campplus_cn_common.bin'
         stamp = (weights.stat().st_size, weights.stat().st_mtime_ns) if weights.is_file() else None
@@ -620,6 +710,8 @@ class VideoDubPipeline:
         return result
 
     def generate_dubbing(self, video, output, speaker_ref, stop_after, sep_key, audio, vocals, background):
+        if self.project.get('separation_revision'):
+            sep_key = digest(sep_key, self.project['separation_revision'])
         cfg, segments = self.cfg, self.project['segments']
         duration, selected = self.project['duration'], self.reference_range
         project_path, stamps = self.work/'project.json', {}
@@ -653,7 +745,10 @@ class VideoDubPipeline:
             self.project['reference_sentence_id'] = None if automatic_reference(self.project) else ident
         reference = None
         role_references = {}
-        if mode_chosen and sentence_voice and mode == 'roles':
+        if mode_chosen and sentence_voice and mode == 'external':
+            from .external_voice import checked_reference
+            reference = checked_reference(self.project, self.work)
+        elif mode_chosen and sentence_voice and mode == 'roles':
             for role_id in {s['role_id'] for s in mode_chosen}:
                 best = reference_segment(self.project, role_id)
                 key = digest(sep_key, best['start'], min(15, best['end']-best['start']), self.media.sample_rate)
@@ -778,15 +873,22 @@ class VideoDubPipeline:
             raise VoxlateError('请先识别翻译并生成配音')
         duration = self.project['duration']
         validate_segments(segments, duration)
-        stale = [s['id'] for s in segments if s.get('enabled', True) and
-                 (not sentence_ready(s, voice_key(self.project, self.cfg, s)) or not valid_wav(s.get('tts_audio', '')))]
+        from .dubbing_state import missing_dubbing_ids
+        stale = set(missing_dubbing_ids(self.project, self.cfg, verify_audio=True))
+        if stale and not self.allow_missing_dubbing:
+            raise VoxlateError('以下句子需要生成配音：' + '、'.join(map(str, sorted(stale)[:20])))
         if stale:
-            raise VoxlateError('以下句子需要生成配音：' + '、'.join(map(str, stale[:20])))
+            LOG.info('导出：%d 句未配音或需重配，保留原声。', len(stale))
+        # Missing takes are gaps in the temporary dubbing timeline. The mixer
+        # restores the original track there; project selection/takes stay intact.
+        render_segments = copy.deepcopy([s for s in segments if s['id'] not in stale])
+        original_rows = {s['id']: s for s in segments}
         audio, vocals, background = self.cached_media()
         sep_key = self.project['stages']['separate']['key']
         cache = self.work/'segments'
         cache.mkdir(exist_ok=True)
-        for s in segments:
+        for s in render_segments:
+            original_row = original_rows[s['id']]
             duration_s = s['end']-s['start']
             if not s.get('enabled', True):
                 clip = cache/f"source_{s['id']}_{digest(sep_key, s['start'], s['end'], self.media.sample_rate)[:16]}.wav"
@@ -799,10 +901,13 @@ class VideoDubPipeline:
                 if not valid_wav(aligned):
                     self.media.align(s['tts_audio'], aligned, duration_s)
                 s['aligned_audio'] = str(aligned)
-        return self.export_audio(video, output, audio, background, duration, sep_key)
+            original_row['aligned_audio'] = s['aligned_audio']
+            if not s.get('enabled', True):
+                original_row['source_audio'] = s['source_audio']
+        return self.export_audio(video, output, audio, background, duration, sep_key, segments=render_segments)
 
-    def export_audio(self, video, output, audio, background, duration, sep_key):
-        segments, cfg = self.project['segments'], self.cfg
+    def export_audio(self, video, output, audio, background, duration, sep_key, *, segments=None):
+        segments, cfg = self.project['segments'] if segments is None else segments, self.cfg
         input_key = self.project['input_hash']
         timeline = self.work / "dubbing.wav"
         mix = self.work / "final_audio.wav"

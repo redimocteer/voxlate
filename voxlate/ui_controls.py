@@ -13,6 +13,9 @@ def action_icon(kind):
     if kind == 'delete':
         for line in ((5,7,19,7),(9,4,15,4),(7,8,8,20),(17,8,16,20),(8,20,16,20),(10,10,10,17),(14,10,14,17)):
             painter.drawLine(*line)
+    elif kind == 'export':
+        for line in ((12,3,12,15),(7,10,12,15),(12,15,17,10),(5,16,5,20),(5,20,19,20),(19,20,19,16)):
+            painter.drawLine(*line)
     elif kind == 'play':
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor('#3269df'))

@@ -193,6 +193,74 @@ class Invariants(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg unavailable")
 class PipelineIntegration(unittest.TestCase):
+    def test_reseparation_replaces_audio_preserves_edits_and_refreshes_audio_caches(self):
+        self.run_pipeline()
+        path = self.work/'project.json'
+        project = read_json(path)
+        project['segments'][0].update(source_text='Manual text.', target_text='手动译文', enabled=False, manual_boundary=True)
+        write_json(path, project)
+        calls = self.calls.copy()
+        pipeline = VideoDubPipeline(self.cfg, self.runner)
+        original_runner = pipeline.runner
+        def different_stems(kind, job):
+            result = original_runner(kind, job)
+            if kind == 'separator':
+                tone(result[0], 3, frequency=600)
+                tone(result[1], 3, frequency=300)
+            return result
+        pipeline.runner = different_stems
+        pipeline.process(self.video, self.output, self.work, stop_after='separate', force_separation=True)
+        updated = read_json(path)
+        self.assertEqual(self.calls, calls + Counter(separator=1))
+        for old, new in zip(project['segments'], updated['segments']):
+            self.assertEqual(new, {k:v for k,v in old.items() if k not in ('source_audio', 'clip_key')})
+        self.assertTrue(updated['separation_revision'])
+        self.assertNotIn('mix', updated['stages'])
+        self.assertNotIn('mux', updated['stages'])
+        self.assertEqual(list((self.work/'.temp').glob('separation-*')), [])
+        # Ordinary cache reuse still works after replacement.
+        self.run_pipeline(stop_after='separate')
+        self.assertEqual(self.calls, calls + Counter(separator=1))
+        self.run_pipeline(export_only=True)
+        self.assertIn('mix', read_json(path)['stages'])
+
+    def test_failed_or_cancelled_reseparation_preserves_previous_pair_and_project(self):
+        self.run_pipeline(stop_after='separate')
+        path = self.work/'project.json'
+        before = path.read_bytes()
+        stems = self.work/'separated'/self.cfg['separator']['model']/'original'
+        original = {p.name:p.read_bytes() for p in stems.iterdir()}
+        for failure in ('worker', 'invalid', 'cancel', 'save', 'install'):
+            pipeline = VideoDubPipeline(self.cfg, self.runner)
+            original_runner = pipeline.runner
+            def run(kind, job):
+                result = original_runner(kind, job)
+                if kind == 'separator':
+                    if failure == 'worker':
+                        raise VoxlateError('worker failed')
+                    if failure == 'invalid':
+                        Path(result[1]).write_bytes(b'bad')
+                return result
+            pipeline.runner = run
+            replace = Path.replace
+            def fail_install(source, target):
+                if source.name == 'original' and 'new' in source.parts:
+                    raise OSError('install failed')
+                return replace(source, target)
+            from contextlib import ExitStack
+            with ExitStack() as stack:
+                if failure == 'cancel':
+                    stack.enter_context(patch('voxlate.pipeline.check_cancelled', side_effect=[None, VoxlateError('已取消')]))
+                elif failure == 'save':
+                    stack.enter_context(patch('voxlate.pipeline.write_json', side_effect=OSError('save failed')))
+                elif failure == 'install':
+                    stack.enter_context(patch.object(Path, 'replace', new=fail_install))
+                with self.assertRaises((VoxlateError, OSError)):
+                    pipeline.process(self.video, self.output, self.work, stop_after='separate', force_separation=True)
+            self.assertEqual(path.read_bytes(), before, failure)
+            self.assertEqual({p.name:p.read_bytes() for p in stems.iterdir()}, original, failure)
+            self.assertEqual(list((self.work/'.temp').glob('separation-*')), [], failure)
+
     def test_fill_missing_preserves_existing_translation_even_when_settings_change(self):
         self.run_pipeline(stop_after='translate')
         path = self.work/'project.json'
@@ -759,6 +827,35 @@ class PipelineIntegration(unittest.TestCase):
     def run_pipeline(self, **kwargs):
         return VideoDubPipeline(self.cfg, self.runner).process(self.video, self.output, self.work, **kwargs)
 
+    def test_selected_translation_preserves_unselected_rows_and_translates_excluded_rows(self):
+        self.run_pipeline(stop_after='translate')
+        path=self.work/'project.json'
+        project=read_json(path)
+        project['segments'][0]['enabled']=False
+        project['segments'][1]['target_text']='Keep this translation'
+        write_json(path,project)
+        before=copy.deepcopy(project['segments'][1])
+        jobs=[]
+        def runner(kind,job):
+            self.assertEqual(kind,'translator'); jobs.append(job)
+            return ['Replacement']*len(job['texts'])
+        args=dict(stop_after='translate',translate_only=True,sentence_ids=[1])
+        VideoDubPipeline(self.cfg,runner).process(self.video,self.output,self.work,force_translation=True,**args)
+        result=read_json(path)
+        self.assertEqual(result['segments'][0]['target_text'],'Replacement')
+        self.assertFalse(result['segments'][0]['enabled'])
+        self.assertEqual(result['segments'][1],before)
+        self.assertEqual(jobs[0]['indices'],[0])
+        self.assertEqual(len(jobs[0]['context']),len(project['segments']))
+        VideoDubPipeline(self.cfg,runner).process(self.video,self.output,self.work,translate_missing_only=True,**args)
+        self.assertEqual(len(jobs),1)
+        before_bytes=path.read_bytes()
+        for ids in ([],[999]):
+            with self.assertRaises(VoxlateError):
+                VideoDubPipeline(self.cfg,runner).process(self.video,self.output,self.work,
+                    stop_after='translate',translate_only=True,sentence_ids=ids)
+            self.assertEqual(path.read_bytes(),before_bytes)
+
     def test_render_resume_and_single_sentence_edit(self):
         self.run_pipeline()
         self.assertEqual(self.calls, Counter(separator=1, asr=1, translator=1, tts=1))
@@ -844,6 +941,50 @@ class PipelineIntegration(unittest.TestCase):
                 self.assertEqual(mixed.readframes(last-first),original.readframes(last-first))
             original.setpos(round(.3*rate)); mixed.setpos(round(.3*rate))
             self.assertNotEqual(mixed.readframes(1000),original.readframes(1000))
+
+    def test_confirmed_partial_export_restores_source_and_does_not_change_sentence_state(self):
+        self.run_pipeline()
+        path=self.work/'project.json'; project=read_json(path)
+        project['segments'][0]['target_text']='Edited translation requiring a new take'
+        write_json(path,project)
+        previous_output=self.output.read_bytes()
+        with self.assertRaisesRegex(VoxlateError,'需要生成配音'):
+            self.run_pipeline(export_only=True)
+        self.assertEqual(self.output.read_bytes(),previous_output)
+        before=copy.deepcopy(project['segments'][0]); calls=self.calls.copy()
+        self.run_pipeline(export_only=True,allow_missing_dubbing=True)
+        result=read_json(path)
+        self.assertEqual(result['segments'][0],before)
+        self.assertEqual(self.calls,calls)
+        with wave.open(str(self.work/'original.wav')) as source,wave.open(str(self.work/'final_audio.wav')) as mixed:
+            rate=source.getframerate();start,end=before['start'],before['end']
+            first,last=round(start*rate),round(end*rate)
+            source.setpos(first);mixed.setpos(first)
+            self.assertEqual(source.readframes(last-first),mixed.readframes(last-first))
+            other=result['segments'][1]; first=round((other['start']+.1)*rate)
+            source.setpos(first);mixed.setpos(first)
+            self.assertNotEqual(source.readframes(1000),mixed.readframes(1000))
+        fallback_mix_key=result['stages']['mix']['key']
+        self.run_pipeline(stop_after='dub',require_translated=True,sentence_ids=[1])
+        self.run_pipeline(export_only=True)
+        self.assertNotEqual(read_json(path)['stages']['mix']['key'],fallback_mix_key)
+
+    def test_all_missing_and_corrupt_takes_can_export_original_after_confirmation(self):
+        self.run_pipeline(stop_after='recognize')
+        path=self.work/'project.json'; before=read_json(path)['segments']; calls=self.calls.copy()
+        self.run_pipeline(export_only=True,allow_missing_dubbing=True)
+        self.assertEqual(read_json(path)['segments'],before)
+        self.assertEqual(self.calls,calls)
+        with wave.open(str(self.work/'original.wav')) as source,wave.open(str(self.work/'final_audio.wav')) as mixed:
+            self.assertEqual(source.readframes(source.getnframes()),mixed.readframes(mixed.getnframes()))
+        self.run_pipeline(stop_after='translate')
+        self.run_pipeline(stop_after='dub',require_translated=True)
+        project=read_json(path)
+        Path(project['segments'][0]['tts_audio']).write_bytes(b'broken wave file'+b'x'*100)
+        from voxlate.dubbing_state import missing_dubbing_ids
+        self.assertEqual(missing_dubbing_ids(project,self.cfg,verify_audio=True),[1])
+        self.run_pipeline(export_only=True,allow_missing_dubbing=True)
+        self.assertTrue(read_json(path)['segments'][0].get('enabled', True))
 
     def test_unchecked_sentence_keeps_original_voice_and_can_reuse_tts_when_reenabled(self):
         self.run_pipeline(stop_after="translate")

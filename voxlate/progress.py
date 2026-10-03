@@ -38,6 +38,15 @@ def report_tts(path, phase, completed, total, current=None):
             pass  # A transient progress-file lock must not abort generated speech.
 
 
+def report_asr(directory, detail):
+    """Best-effort UI state; transcript/checkpoint writes remain mandatory."""
+    if directory is not None:
+        try:
+            write_json(Path(directory)/'asr_progress.json', dict(stage='processing', detail=detail))
+        except OSError:
+            pass  # Keep recognizing; the next update can refresh the display.
+
+
 class TTSProgress:
     def __init__(self, path, log, total, cached=0, clock=time.time):
         self.path, self.log, self.clock = Path(path), Path(log), clock
