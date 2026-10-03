@@ -3,7 +3,7 @@
 ## 0.1：英／日 → 中文
 
 - 固定标签：[v0.1.0-beta.1](https://github.com/redimocteer/voxlate/tree/v0.1.0-beta.1)。
-- 可下载版本：[Windows 测试版及对应源码](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.3)。
+- 可下载版本：[Windows 测试版及对应源码](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.4)。
 - 维护基线：[milestone/chinese-output](https://github.com/redimocteer/voxlate/tree/milestone/chinese-output)。
 - 基线提交：`f419374979acace20123a26d37b8f1ddb5d699d4`。
 - 后续修复版：[v0.1.0-beta.2](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.2)，修复日语识别启动错误并支持框选原文／译文后复制。
@@ -11,6 +11,8 @@
 beta.1 的发布页与下载附件因日语识别错误已撤下，源码标签仍保留。旧版修复在 `main` 另发新版本，`milestone/chinese-output` 保留初始基线；三语言开发不移动基线标签。
 
 新增 [v0.1.0-beta.3](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.3)：波形分句编辑、逐句参考音色、翻译／配音补缺及操作响应改进，仍只输出中文。
+
+新增 [v0.1.0-beta.4](https://github.com/redimocteer/voxlate/releases/tag/v0.1.0-beta.4)：外部音色、所选句子处理、仅应用分句和未配音保留原声导出，仍只输出中文。
 
 ## 0.2 开发：中、英、日互转
 

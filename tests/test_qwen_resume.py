@@ -59,6 +59,39 @@ class QwenResumeTests(unittest.TestCase):
     def run_asr(self):
         return transcribe(self.audio, self.cfg, self.root)
 
+    def test_locked_progress_file_does_not_abort_recognition_or_alignment(self):
+        import os
+        replace = os.replace
+        def locked_progress(source, destination):
+            if Path(destination).name == 'asr_progress.json':
+                raise PermissionError('progress temporarily locked')
+            return replace(source, destination)
+        with patch('voxlate.common.os.replace', side_effect=locked_progress), patch('voxlate.common.time.sleep'):
+            rows = self.run_asr()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(read_json(self.root/'recognition/qwen_alignment.json')), 2)
+        self.assertEqual(list(self.root.glob('.*.tmp')), [])
+        self.asr_factory.reset_mock()
+        self.align_factory.reset_mock()
+        self.assertEqual(self.run_asr(), rows)
+        self.asr_factory.assert_not_called()
+        self.align_factory.assert_not_called()
+
+    def test_old_progress_crash_saved_alignment_before_notification(self):
+        def old_progress(directory, message):
+            if message.startswith('Qwen 时间对齐：1/'):
+                raise PermissionError('old progress writer failed')
+        with patch('voxlate.qwen_recognition.report_asr', side_effect=old_progress):
+            with self.assertRaises(PermissionError):
+                self.run_asr()
+        self.assertEqual(len(read_json(self.root/'recognition/qwen_alignment.json')), 1)
+        self.asr_factory.reset_mock()
+        self.aligner.align.reset_mock()
+        rows = self.run_asr()
+        self.asr_factory.assert_not_called()
+        self.assertEqual(self.aligner.align.call_count, 1)
+        self.assertEqual(len(rows), 2)
+
     def test_interrupted_recognition_resumes_only_missing_block(self):
         self.asr.transcribe.side_effect = [[NS(text='Hello.')], RuntimeError('stopped')]
         with self.assertRaisesRegex(RuntimeError, 'stopped'):

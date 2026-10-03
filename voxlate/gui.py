@@ -283,6 +283,7 @@ class MainWindow(QMainWindow):
         self.tts_session = TTSSession(self.model_event.emit)
         self.translation_session = TTSSession(self.model_event.emit, kind='translator')
         self.project = None
+        self.external_reference = None
         self.project_path = None
         self.project_hash = None
         self.dirty = False
@@ -313,6 +314,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self._build()
         self.refresh_voice_fields()
+        self.setMinimumWidth(max(self.minimumWidth(), self.minimumSizeHint().width()))
         if auto_check:
             QTimer.singleShot(0, self.restore_resources)
 
@@ -408,14 +410,17 @@ class MainWindow(QMainWindow):
         voice_row = QHBoxLayout()
         voice_row.addWidget(QLabel('音色参考'))
         self.uniform_voice = QRadioButton('统一音色')
+        self.external_voice = QRadioButton('外部音色')
         self.individual_voice = QRadioButton('逐句音色（推荐）')
         self.role_voice = QRadioButton('分角色音色')
         self.uniform_voice.setToolTip('适合单人')
+        self.external_voice.setToolTip('使用外部音频或视频中的参考音色')
         self.individual_voice.setToolTip('适合多人')
         self.role_voice.setToolTip('减少同一角色不同句子的音色差异')
         self.voice_group = QButtonGroup(self)
-        for button in (self.uniform_voice, self.individual_voice, self.role_voice):
+        for button in (self.uniform_voice, self.external_voice, self.individual_voice, self.role_voice):
             self.voice_group.addButton(button)
+            button.setMinimumWidth(button.sizeHint().width())
         self.individual_voice.setChecked(True)
         voice_row.addWidget(self.uniform_voice)
         voice_row.addWidget(QLabel('第'))
@@ -426,9 +431,14 @@ class MainWindow(QMainWindow):
         voice_row.addWidget(self.reference_sentence)
         voice_row.addWidget(QLabel('句'))
         voice_row.addSpacing(18)
+        voice_row.addWidget(self.external_voice)
+        self.external_voice_button = self.button('打开', self.open_external_voice)
+        self.external_voice_button.setToolTip('选择音频或视频，截取参考片段')
+        voice_row.addWidget(self.external_voice_button)
+        voice_row.addSpacing(8)
         voice_row.addWidget(self.individual_voice)
         voice_row.addWidget(self.role_voice)
-        self.role_manager_button = self.button('角色管理…', self.manage_roles)
+        self.role_manager_button = self.button('音色管理…', self.manage_roles)
         voice_row.addWidget(self.role_manager_button)
         self.full_segmentation_button = self.button('手动分句...', self.open_full_segmentation)
         self.full_segmentation_button.setToolTip('分离后可用。带入已有句子边界；尚未识别时从空白开始。')
@@ -443,7 +453,7 @@ class MainWindow(QMainWindow):
         self.model_event.connect(self.refresh_model_button)
         self.voice_group.buttonToggled.connect(lambda button, checked: self.change_voice_selection() if checked else None)
         self.reference_sentence.valueChanged.connect(self.change_voice_selection)
-        self.busy_widgets.extend((self.uniform_voice, self.individual_voice, self.role_voice, self.reference_sentence))
+        self.busy_widgets.extend((self.uniform_voice, self.external_voice, self.individual_voice, self.role_voice, self.reference_sentence))
         layout.addLayout(voice_row)
         self.video.setReadOnly(True)
         self.video.setAcceptDrops(False)
@@ -455,6 +465,7 @@ class MainWindow(QMainWindow):
         self.table.setHorizontalHeaderLabels(["时间", "原文", "译文", "", "", "角色", ""])
         self.table.timeRangeSelected.connect(self.select_segmentation_range)
         self.table.itemSelectionChanged.connect(self.refresh_segmentation_selection)
+        self.table.itemSelectionChanged.connect(self.refresh_processing_selection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         for column in (1, 2):
             self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
@@ -489,10 +500,10 @@ class MainWindow(QMainWindow):
         self.recognize_button.setToolTip('识别已分离的人声；Qwen 自动续跑。应用自动分句会替换手动分句和译文，需重新配音。')
         actions.addWidget(self.recognize_button)
         actions.addWidget(self.full_segmentation_button)
-        self.translate_button = self.button("全文翻译", lambda: self.start_pipeline('translate'))
+        self.translate_button = self.button("全文翻译", lambda: self.process_selection('translate'))
         self.translate_button.setEnabled(False)
         actions.addWidget(self.translate_button)
-        self.dub_button = self.button("全文配音", lambda: self.start_pipeline('dub'))
+        self.dub_button = self.button("全文配音", lambda: self.process_selection('dub'))
         self.dub_button.setEnabled(False)
         actions.addWidget(self.dub_button)
         self.export_button = self.button("导出", lambda: self.start_pipeline('export'))
@@ -1261,6 +1272,8 @@ class MainWindow(QMainWindow):
                 player.close()
 
     def restore_voice_selection(self):
+        data = (self.project or {}).get('external_voice')
+        self.external_reference = copy.deepcopy(data) if isinstance(data, dict) else None
         mode, ident = voice_selection(self.project) if self.project is not None else ('individual', None)
         if automatic_reference(self.project):
             ident = None
@@ -1268,6 +1281,7 @@ class MainWindow(QMainWindow):
         self.voice_group.blockSignals(True)
         self.reference_sentence.blockSignals(True)
         self.uniform_voice.setChecked(mode == 'uniform')
+        self.external_voice.setChecked(mode == 'external')
         self.individual_voice.setChecked(mode == 'individual')
         self.role_voice.setChecked(mode == 'roles')
         self.reference_sentence.setRange(0, max((s['id'] for s in segments), default=0))
@@ -1302,7 +1316,75 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.auto_assign_roles)
 
     def selected_voice_mode(self):
+        if self.external_voice.isChecked():
+            return 'external'
         return 'roles' if self.role_voice.isChecked() else ('uniform' if self.uniform_voice.isChecked() else 'individual')
+
+    def external_voice_ready(self):
+        return bool(self.external_reference and self.external_reference.get('key') and
+                    audio_exists(self.external_reference.get('audio')))
+
+    def open_external_voice(self):
+        if self.task is not None:
+            return
+        video = Path(self.video.text().strip())
+        if not self.video.text().strip() or not video.is_file():
+            QMessageBox.information(self, '请选择视频', '先选择要配音的视频，再打开外部音色。')
+            return
+        source, _ = QFileDialog.getOpenFileName(self, '打开外部音色', str(video.parent),
+            '音频或视频 (*.wav *.mp3 *.flac *.m4a *.aac *.ogg *.opus *.mp4 *.mkv *.avi *.mov *.webm);;所有文件 (*)')
+        if not source or not self.save_translations():
+            return
+        from .external_voice import reference_info, import_reference
+        cfg = copy.deepcopy(self.cfg)
+        path = self.project_path or self.default_project_path(video)
+        try:
+            validate_project_directory(video, path.parent)
+        except VoxlateError as exc:
+            QMessageBox.warning(self, '项目位置不正确', str(exc))
+            return
+        def prepared(info):
+            def choose_when_idle():
+                if self.task is not None:
+                    QTimer.singleShot(25, choose_when_idle)
+                    return
+                if Path(self.video.text()).resolve() != video.resolve() or (self.project_path and self.project_path != path):
+                    return
+                from .player import VideoPlayer
+                from .app_settings import player_volume
+                player = VideoPlayer(source, self, [0, min(10., info['duration'])],
+                    volume=player_volume(self.data_dir), reference_min_seconds=.1)
+                player.setWindowTitle('外部音色 · '+Path(source).name)
+                player.setWindowModality(Qt.WindowModality.WindowModal)
+                hint = QLabel('建议选 3–15 秒清晰单人说话；视频使用第一条音轨。')
+                hint.setWordWrap(True)
+                player.layout().insertWidget(1, hint)
+                if not info['video']:
+                    player.video.hide()
+                    player.resize(760, 180)
+                player.player.tracksChanged.connect(lambda: player.player.setActiveAudioTrack(0))
+                player.volumeChanged.connect(self.remember_player_volume)
+                accepted = player.exec() == QDialog.DialogCode.Accepted
+                selected = player.selected_range
+                player.deleteLater()
+                if not accepted or not selected:
+                    return
+                def imported(reference):
+                    self.external_reference = reference
+                    self.voice_group.blockSignals(True)
+                    self.external_voice.setChecked(True)
+                    self.voice_group.blockSignals(False)
+                    self.dirty = self.project is not None
+                    if not self.save_translations():
+                        self.restore_voice_selection()
+                        return
+                    self.refresh_role_column()
+                    self.refresh_voice_fields()
+                    self.set_status('外部音色已就绪：'+reference['label'])
+                self.start_task(lambda emit: import_reference(source, path.parent, cfg, selected), imported,
+                                cancellable=True, keep_tts=True)
+            QTimer.singleShot(0, choose_when_idle)
+        self.start_task(lambda emit: reference_info(source, cfg), prepared, cancellable=True, keep_tts=True)
 
     def refresh_role_column(self):
         self.table.setColumnHidden(5, not self.role_voice.isChecked())
@@ -1341,7 +1423,14 @@ class MainWindow(QMainWindow):
         def preview(ident):
             row = next(i for i, s in enumerate(self.project['segments']) if s['id'] == ident)
             self.play_sentence(row, original=True)
-        dialog = RoleDialog(candidate, preview, self)
+        from .external_voice import export_role_reference
+        project_path, cfg = self.project_path, copy.deepcopy(self.cfg)
+        def export_reference(segment, destination):
+            return export_role_reference(candidate, project_path.parent, cfg, segment, destination)
+        def playing_reference():
+            current = self.playing_sentence
+            return self.project['segments'][current[0]]['id'] if current and current[1] else None
+        dialog = RoleDialog(candidate, preview, self, export_reference=export_reference, playing_reference=playing_reference)
         accepted = dialog.exec() == QDialog.DialogCode.Accepted
         self.stop_sentence_audio()
         if accepted:
@@ -1351,6 +1440,7 @@ class MainWindow(QMainWindow):
                 self.dirty = True
                 self.save_translations(roles=dialog.roles, roles_initialized=True)
                 self.refresh_role_column()
+        dialog.deleteLater()
 
     def auto_assign_roles(self):
         if self.task is not None or not self.project or not self.project.get('segments'):
@@ -1376,7 +1466,7 @@ class MainWindow(QMainWindow):
                 if previous_mode != self.selected_voice_mode():
                     self.notify(f"识别到 {len(result['roles'])} 个角色，已切换逐句音色；仍可手动改回。")
                 else:
-                    self.notify(f"已分为 {len(result['roles'])} 个角色，{uncertain} 句待确认；可在角色管理中调整。")
+                    self.notify(f"已分为 {len(result['roles'])} 个角色，{uncertain} 句待确认；可在音色管理中调整。")
         self.start_task(action, complete, cancellable=True)
 
     def refresh_voice_fields(self):
@@ -1427,6 +1517,9 @@ class MainWindow(QMainWindow):
         from .segmentation import preview_translations
         project, path, cfg = copy.deepcopy(self.project), self.project_path, copy.deepcopy(self.cfg)
         segment = project['segments'][row]
+        if segment.get('pending_recognition') and not segment['source_text'].strip():
+            self.start_pipeline('translate', sentence_ids=[segment['id']])
+            return
         sentence = dict(index=row, start=segment['start'], end=segment['end'], text=segment['source_text'])
         def action(emit):
             return preview_translations(path, digest(project), cfg, [sentence],
@@ -1497,13 +1590,36 @@ class MainWindow(QMainWindow):
         return (bool(self.project.get("translation_config_key")) or any(s.get("target_text", "").strip() for s in segments)) and all(
             s.get("target_text", "").strip() for s in segments if s.get("enabled", True))
 
+    def selected_sentence_ids(self):
+        segments = (self.project or {}).get('segments', [])
+        rows = sorted({index.row() for index in self.table.selectedIndexes() if index.column() in (0, 1, 2)})
+        return [segments[row]['id'] for row in rows if row < len(segments)]
+
+    def refresh_processing_selection(self):
+        if hasattr(self, 'dub_button'):
+            self.refresh_export_state(rows=())
+
+    def process_selection(self, step):
+        ids = self.selected_sentence_ids()
+        if ids and step == 'dub':
+            ids = [s['id'] for s in self.project['segments'] if s['id'] in ids and s.get('enabled', True)]
+            if not ids:
+                return
+        self.start_pipeline(step, sentence_ids=ids or None, batch_selection=bool(ids))
+
     def refresh_export_state(self, rows=None):
         self.refresh_model_button()
         self.audio_track_box.setEnabled(self.task is None and len(self.audio_tracks) > 1)
         self.translate_button.setEnabled(self.task is None and bool((self.project or {}).get('segments')))
+        selected_ids = self.selected_sentence_ids()
+        self.translate_button.setText('翻译所选' if selected_ids else '全文翻译')
+        self.dub_button.setText('配音所选' if selected_ids else '全文配音')
         self.one_click_button.setEnabled(self.task is None)
         self.role_manager_button.setEnabled(self.task is None and bool((self.project or {}).get('segments')))
         self.full_segmentation_button.setEnabled(self.task is None and bool((self.project or {}).get('prepared_audio_key')))
+        self.external_voice_button.setEnabled(self.task is None and bool(self.video.text().strip()))
+        self.external_voice_button.setToolTip('已选：'+self.external_reference.get('label', '参考音频')+'；点击更换' if self.external_voice_ready()
+            else '选择音频或视频，截取参考片段')
         for row in (range(self.table.rowCount()) if rows is None else rows):
             combo = self.table.cellWidget(row, 5)
             if combo:
@@ -1512,12 +1628,16 @@ class MainWindow(QMainWindow):
                                               and self.project_path.is_file())
         self.clear_project_button.setEnabled(self.task is None and bool(self.video.text().strip())
                                              and project_root(self.video.text()).is_dir())
-        translated = self.translation_ready()
-        active = any(s.get("enabled", True) for s in (self.project or {}).get("segments", []))
+        selected_active = [s['id'] for s in (self.project or {}).get('segments', [])
+                           if s.get('enabled', True) and (not selected_ids or s['id'] in selected_ids)]
+        translated = self.translation_ready(selected_active if selected_ids else None)
+        active = bool(selected_active)
         voice = not active or self.role_voice.isChecked() or self.individual_voice.isChecked() or self.reference_sentence.value() == 0 or self.reference_sentence.value() in {
             s['id'] for s in (self.project or {}).get('segments', [])}
         if self.role_voice.isChecked() and not (self.project or {}).get('roles_initialized'):
             voice = False
+        if self.external_voice.isChecked() and active:
+            voice = self.external_voice_ready()
         self.reference_sentence.setEnabled(self.task is None and self.uniform_voice.isChecked()
                                            and bool((self.project or {}).get('segments')))
         recommendation = voice_selection(self.project)[1] if automatic_reference(self.project) else None
@@ -1526,8 +1646,7 @@ class MainWindow(QMainWindow):
             '留空自动推荐；首次配音时分析，可填写句号指定。')
         self.dub_button.setEnabled(self.task is None and translated and voice and not self.dirty)
         self.dub_button.setToolTip('')
-        ready = dubbing_ready(self.project, self.cfg)
-        self.export_button.setEnabled(self.task is None and ready and not self.dirty)
+        self.export_button.setEnabled(self.task is None and bool((self.project or {}).get('segments')) and not self.dirty)
         self.export_button.setToolTip('')
         self.refresh_sentence_buttons(rows)
 
@@ -1611,6 +1730,7 @@ class MainWindow(QMainWindow):
                 continue
             ready = sentence_ready(segment, contexts[segment['id']])
             widget.dub.setEnabled(self.task is None and not self.dirty and segment.get('enabled', True)
+                                  and (not self.external_voice.isChecked() or self.external_voice_ready() or segment.get('voice_reference_sentence_id') is not None)
                                   and (not self.role_voice.isChecked() or self.project.get('roles_initialized', False))
                                   and config_matches and bool(segment.get('target_text','').strip()))
             reference_id = segment.get('voice_reference_sentence_id')
@@ -2107,8 +2227,8 @@ class MainWindow(QMainWindow):
             pipeline = VideoDubPipeline(cfg)
             pipeline.work, pipeline.project = path.parent, project
             original, vocals, _ = pipeline.cached_media()
-            waves = [cached_waveform(track, path.parent, plan.start, min(plan.end,plan.start+30) if full else plan.end) for track in (original,vocals)]
-            overview = [cached_waveform(track,path.parent,plan.start,plan.end,limit=20000) for track in (original,vocals)] if full else waves
+            waves = [cached_waveform(track, path.parent, plan.start, min(plan.end,plan.start+30) if plan.paged_waveform else plan.end) for track in (original,vocals)]
+            overview = [cached_waveform(track,path.parent,plan.start,plan.end,limit=20000) for track in (original,vocals)] if plan.paged_waveform else waves
             return original, vocals, waves, overview
         def prepared(value):
             def open_when_idle():
@@ -2119,9 +2239,7 @@ class MainWindow(QMainWindow):
                     return
                 original, vocals, waves, overview = value
                 def load_waves(start, end):
-                    if full:
-                        return [waveform_peaks(track, start=start, end=end) for track in (original, vocals)]
-                    return [cached_waveform(track, path.parent, start, end) for track in (original, vocals)]
+                    return [waveform_peaks(track, start=start, end=end) for track in (original, vocals)]
                 def translate_selection(sentences, context, use_original):
                     return preview_translations(path, expected, cfg, sentences, context=context,
                         use_original=use_original, tts_session=self.tts_session, translation_session=self.translation_session)
@@ -2137,7 +2255,8 @@ class MainWindow(QMainWindow):
                     dialog.deleteLater()
                     return
                 selected_blocks = dialog.export_blocks()
-                needs_models = segmentation_needs_models(project, selected_blocks)
+                process_text = dialog.process_text
+                needs_models = process_text and segmentation_needs_models(project, selected_blocks)
                 use_original = dialog.source.currentIndex() == 0
                 dialog.deleteLater()
                 try:
@@ -2147,7 +2266,7 @@ class MainWindow(QMainWindow):
                     return
                 def action(emit):
                     return apply_segmentation(path, expected, cfg, selected_blocks, use_original=use_original, full=full,
-                        tts_session=self.tts_session, translation_session=self.translation_session)
+                        tts_session=self.tts_session, translation_session=self.translation_session, process_text=process_text)
                 def complete(result):
                     self.load_project(path)
                     skipped = len(result.get('skipped', []))
@@ -2220,6 +2339,8 @@ class MainWindow(QMainWindow):
                         reference_auto_recommend=self.reference_sentence.value() == 0,
                         speaker_reference='', reference_range=None, auto_reference=True)
                     current.pop('reference_auto_longest', None)
+                    if self.external_reference is not None:
+                        current['external_voice'] = copy.deepcopy(self.external_reference)
                     if roles is not None:
                         current['roles'] = copy.deepcopy(roles)
                     if current['voice_mode'] == 'roles' or current.get('roles'):
@@ -2260,15 +2381,15 @@ class MainWindow(QMainWindow):
                 self.notify('退出时未能保存项目：' + str(exc))
             return False
 
-    def choose_translation_scope(self):
+    def choose_translation_scope(self, selected=False):
         return self.choose_processing_scope('翻译范围',
-            '补全空白会保留已有译文；全部重译会覆盖。\n两者均包含已舍弃的句子。',
-            '仅补全空白', '全部重译')
+            ('仅处理所选句子（含已舍弃）。' if selected else '包含已舍弃的句子。') + '\n补全保留已有译文，重译将覆盖。',
+            '仅补全空白', '重译所选' if selected else '全部重译')
 
-    def choose_dubbing_scope(self):
+    def choose_dubbing_scope(self, selected=False):
         return self.choose_processing_scope('配音范围',
-            '补全缺失或失效配音，或覆盖已有配音。\n仅处理当前音色方案的已选句子。',
-            '仅补全缺失', '全部重配')
+            ('仅处理所选句子，跳过已舍弃。' if selected else '处理全部句子，跳过已舍弃。') + '\n使用当前音色，补全缺失或重新配音。',
+            '仅补全缺失', '重配所选' if selected else '全部重配')
 
     def choose_processing_scope(self, title, message, missing_label, overwrite_label):
         dialog = QMessageBox(self)
@@ -2283,21 +2404,46 @@ class MainWindow(QMainWindow):
         dialog.exec()
         return 'missing' if dialog.clickedButton() is missing else 'all' if dialog.clickedButton() is overwrite else None
 
-    def start_pipeline(self, stop_after, *, sentence_ids=None, force_tts=False):
+    def confirm_overwrite(self, message):
+        dialog = QMessageBox(QMessageBox.Icon.Question, '确认覆盖', message, parent=self)
+        confirm = dialog.addButton('确定', QMessageBox.ButtonRole.AcceptRole)
+        cancel = dialog.addButton('取消', QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(cancel)
+        dialog.setEscapeButton(cancel)
+        dialog.exec()
+        return dialog.clickedButton() is confirm
+
+    def confirm_original_export(self, count):
+        dialog = QMessageBox(QMessageBox.Icon.Question, '保留原声导出',
+            f'还有 {count} 句未配音或需重配，将保留原声。\n继续导出？', parent=self)
+        confirm = dialog.addButton('继续导出', QMessageBox.ButtonRole.AcceptRole)
+        cancel = dialog.addButton('取消', QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(cancel)
+        dialog.setEscapeButton(cancel)
+        dialog.exec()
+        return dialog.clickedButton() is confirm
+
+    def start_pipeline(self, stop_after, *, sentence_ids=None, force_tts=False, batch_selection=False):
         stop_after = 'export' if stop_after is None else stop_after
         if self.task is not None:
             return
         if stop_after == 'dub' and self.role_voice.isChecked() and not (self.project or {}).get('roles_initialized'):
-            QMessageBox.information(self, '请先确认角色', '请先在「角色管理…」中自动分组或手动分配角色。')
+            QMessageBox.information(self, '请先确认角色', '请先在「音色管理…」中自动分组或手动分配角色。')
             return
+        if stop_after in ('dub', 'auto') and self.external_voice.isChecked() and not self.external_voice_ready():
+            rows = (self.project or {}).get('segments', [])
+            chosen = [s for s in rows if s.get('enabled', True) and (sentence_ids is None or s['id'] in sentence_ids)]
+            if not rows or any(s.get('voice_reference_sentence_id') is None for s in chosen):
+                QMessageBox.information(self, '请选择外部音色', '点击外部音色旁的「打开」，选择参考片段。')
+                return
         if stop_after == 'dub' and not self.translation_ready(sentence_ids):
             QMessageBox.information(self, "请先翻译", "先完成翻译，查看译文后再生成配音。")
             return
         if stop_after == 'translate' and not (self.project or {}).get('segments'):
             QMessageBox.information(self, '请先识别', '先识别对白，再翻译。')
             return
-        if stop_after == 'export' and not dubbing_ready(self.project, self.cfg):
-            QMessageBox.information(self, '请先生成配音', '先生成所有已启用句子的配音，再导出视频。')
+        if stop_after == 'export' and not (self.project or {}).get('segments'):
+            QMessageBox.information(self, '请先分句', '先完成自动分句或手动分句，再导出。')
             return
         video = Path(self.video.text().strip()).resolve()
         if not self.video.text().strip() or not video.is_file():
@@ -2313,33 +2459,49 @@ class MainWindow(QMainWindow):
         force_translation = stop_after == 'translate'
         translate_missing_only = False
         force_recognition = stop_after == 'recognize'
+        force_separation = False
         segments = (self.project or {}).get('segments', [])
+        translation_rows = [s for s in segments if sentence_ids is None or s['id'] in sentence_ids]
         active = [s for s in segments if s.get('enabled', True)
                   and (sentence_ids is None or s['id'] in sentence_ids)]
+        allow_missing_dubbing = False
+        if stop_after == 'export':
+            from .dubbing_state import missing_dubbing_ids
+            missing = missing_dubbing_ids(self.project, self.cfg, verify_audio=True)
+            if missing:
+                if not self.confirm_original_export(len(missing)):
+                    return
+                allow_missing_dubbing = True
         message = None
-        if stop_after == 'recognize' and (segments or (self.project or {}).get('manual_edits')):
+        if stop_after == 'separate':
+            work = (self.project_path or self.default_project_path(video)).parent
+            model = (self.project or {}).get('separator_model', self.cfg['separator']['model'])
+            force_separation = bool((self.project or {}).get('stages', {}).get('separate')) or any(
+                (work/'separated'/model/'original'/name).is_file() for name in ('vocals.wav', 'no_vocals.wav'))
+            if force_separation:
+                message = '重新分离将覆盖人声和背景音。\n现有分句、译文和配音保留。'
+        elif stop_after == 'recognize' and (segments or (self.project or {}).get('manual_edits')):
             manual = bool((self.project or {}).get('manual_edits')) or any(s.get('manual_boundary') for s in segments)
             message = '将覆盖手动分句、选弃和译文，需重新配音。' if manual else '重新识别将重置分句、选弃和译文，需重新配音。'
-        elif stop_after == 'translate' and any(s.get('target_text', '').strip() for s in segments):
-            scope = self.choose_translation_scope()
+        elif stop_after == 'translate' and any(s.get('target_text', '').strip() for s in translation_rows):
+            scope = self.choose_translation_scope(selected=sentence_ids is not None)
             if scope is None:
                 return
             translate_missing_only = scope == 'missing'
             force_translation = not translate_missing_only
-            if translate_missing_only and all(s.get('target_text', '').strip() for s in segments):
+            if translate_missing_only and all(s.get('target_text', '').strip() for s in translation_rows):
                 self.set_status('译文已完整，无需补全。')
                 return
-        elif stop_after == 'dub' and sentence_ids is None and any(audio_exists(s.get('tts_audio')) for s in active):
-            scope = self.choose_dubbing_scope()
+        elif stop_after == 'dub' and (sentence_ids is None or batch_selection) and any(audio_exists(s.get('tts_audio')) for s in active):
+            scope = self.choose_dubbing_scope(selected=sentence_ids is not None)
             if scope is None:
                 return
             force_tts = scope == 'all'
-            if not force_tts and dubbing_ready(self.project, self.cfg):
+            contexts = voice_contexts(self.project, self.cfg)
+            if not force_tts and all(sentence_ready(s, contexts[s['id']]) for s in active):
                 self.set_status('配音已完整，无需补全。')
                 return
-        if message and QMessageBox.question(self, '确认覆盖', message,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+        if message and not self.confirm_overwrite(message):
             return
         self.update_output(video)
         output = self.output_path.resolve()
@@ -2363,6 +2525,7 @@ class MainWindow(QMainWindow):
         cfg = copy.deepcopy(self.cfg)
         mode = self.selected_voice_mode()
         reference_id = self.reference_sentence.value() or None
+        external_reference = copy.deepcopy(self.external_reference)
         work = self.project_path.parent
         separation_keys = {'ffmpeg', 'ffprobe', 'separator', 'separator_model'}
         recognition_keys = {'ffmpeg', 'ffprobe',
@@ -2372,8 +2535,12 @@ class MainWindow(QMainWindow):
         dubbing_keys = {'ffmpeg', 'ffprobe', 'tts', 'tts_model'}
         needed = {'separate': separation_keys, 'recognize': recognition_keys, 'translate': translation_keys,
                   'dub': dubbing_keys, 'export': set()}.get(stop_after)
+        if stop_after == 'translate' and any(s.get('pending_recognition') and not s['source_text'].strip() for s in translation_rows):
+            needed = translation_keys | recognition_keys
         if stop_after == 'auto' and segments:
             needed = {'ffmpeg', 'ffprobe'}
+            if any(s.get('pending_recognition') and not s['source_text'].strip() for s in segments):
+                needed |= recognition_keys | translation_keys
             if active and not self.translation_ready():
                 needed |= translation_keys
             if active and (not dubbing_ready(self.project, cfg) or
@@ -2393,6 +2560,9 @@ class MainWindow(QMainWindow):
                 require_translated=stop_after == 'dub', auto_reference=True, voice_mode=mode, reference_sentence_id=reference_id, export_only=stop_after == 'export',
                 sentence_ids=sentence_ids, force_tts=force_tts, force_translation=force_translation,
                 translate_missing_only=translate_missing_only,
+                force_separation=force_separation,
+                allow_missing_dubbing=allow_missing_dubbing,
+                external_voice=external_reference,
                 force_recognition=force_recognition, recognition_only=stop_after == 'recognize',
                 translate_only=stop_after == 'translate', auto_export=stop_after == 'auto')
             return {"path": str(result), "checked_resources": results}

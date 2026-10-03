@@ -381,6 +381,8 @@ class SegmentationDialog(QDialog):
                  load_waves=None, parent=None, full=False, overview_waves=None, translate_selection=None):
         super().__init__(parent)
         self.plan = PairedSegmentPlan(project, first, last, blocks, full=full)
+        self.initial_plan = self.plan.snapshot()
+        self.process_text = True
         self.wave_loader = load_waves
         self.translator = translate_selection
         self.worker = None
@@ -407,7 +409,7 @@ class SegmentationDialog(QDialog):
         self.undo_button.clicked.connect(lambda: self.history(False))
         self.redo_button.clicked.connect(lambda: self.history(True))
         self.canvas = WaveformCanvas(self.plan, waves[0])
-        if full:
+        if self.plan.paged_waveform:
             self.canvas.span = min(30., self.plan.end-self.plan.start)
         self.canvas.selected.connect(self.select_block)
         self.canvas.seek.connect(self.seek)
@@ -510,6 +512,9 @@ class SegmentationDialog(QDialog):
         self.cancel_button = QPushButton('取消')
         self.cancel_button.clicked.connect(self.reject)
         footer.addWidget(self.cancel_button)
+        self.apply_only_button = QPushButton('仅应用分句')
+        self.apply_only_button.clicked.connect(lambda: self.apply(process_text=False))
+        footer.addWidget(self.apply_only_button)
         self.apply_button = QPushButton('应用修改')
         self.apply_button.setObjectName('primary')
         self.apply_button.clicked.connect(self.apply)
@@ -598,6 +603,8 @@ class SegmentationDialog(QDialog):
         self.redo_button.setEnabled(not busy and bool(self.plan.redo_stack))
         self.apply_button.setEnabled(not busy and (not self.plan.full or bool(self.plan.pairs) or bool(self.plan.undo_stack)))
         self.apply_button.setText('应用并识别翻译' if segmentation_needs_models(self.plan.project, self.plan.blocks) else '应用修改')
+        self.apply_only_button.setEnabled(self.apply_button.isEnabled())
+        self.apply_only_button.setVisible(segmentation_needs_models(self.plan.project, self.plan.blocks))
         self.update_playback_controls()
         self.canvas.update()
         self.overview.update()
@@ -815,7 +822,7 @@ class SegmentationDialog(QDialog):
         self.video_preview.follow(seconds, playing, force=force)
 
     def load_detail(self):
-        if not self.plan.full or not self.wave_loader or getattr(self,'closing',False):
+        if not self.plan.paged_waveform or not self.wave_loader or getattr(self,'closing',False):
             return
         if self.detail_worker is not None:
             self.detail_timer.start()
@@ -965,7 +972,7 @@ class SegmentationDialog(QDialog):
             return super().keyPressEvent(event)
         event.accept()
 
-    def apply(self):
+    def apply(self, checked=False, *, process_text=True):
         if self.worker:
             return
         try:
@@ -973,9 +980,27 @@ class SegmentationDialog(QDialog):
         except VoxlateError as exc:
             QMessageBox.warning(self, '请调整分句', str(exc))
             return
+        self.process_text = process_text
         self.accept()
 
+    def confirm_discard(self):
+        box = QMessageBox(QMessageBox.Icon.Question, '放弃修改', '修改尚未应用，确定放弃？', parent=self)
+        discard = box.addButton('放弃修改', QMessageBox.ButtonRole.DestructiveRole)
+        keep = box.addButton('继续编辑', QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep)
+        box.setEscapeButton(keep)
+        box.exec()
+        return box.clickedButton() is discard
+
+    def closeEvent(self, event):
+        self.reject()
+        # done() can decline closing or wait for background work to stop.
+        event.ignore() if self.isVisible() else event.accept()
+
     def done(self, result):
+        if (result == QDialog.DialogCode.Rejected and not getattr(self, 'closing', False)
+                and self.plan.snapshot() != self.initial_plan and not self.confirm_discard()):
+            return
         self.closing = True
         self.detail_timer.stop()
         self.video_timer.stop()

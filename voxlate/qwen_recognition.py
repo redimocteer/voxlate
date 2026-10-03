@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from .common import VoxlateError, write_json, format_timestamp
 from .media import check_cancelled
 from .model_lifecycle import model_event
+from .progress import report_asr
 
 
 def next_chunk_end(source, start, maximum=12):
@@ -159,7 +160,7 @@ def transcribe(audio, config, work_dir):
     directory.mkdir(parents=True, exist_ok=True)
     def progress(message):
         print(message, flush=True)
-        write_json(Path(work_dir)/'asr_progress.json',dict(stage='processing', detail=message))
+        report_asr(work_dir, message)
     from .languages import LANGUAGES
     language = LANGUAGES[config.get('language', 'en')]['asr']
     device = 'cuda:0' if config['device'] == 'cuda' else 'cpu'

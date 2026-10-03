@@ -9,6 +9,7 @@ import unicodedata
 
 from .common import VoxlateError, write_json
 from .asr import configure_cuda, timed_segments
+from .progress import report_asr
 
 VERSION = 1
 
@@ -128,7 +129,7 @@ def transcribe_combined(audio, config, work_dir):
     timings = {}
     def notify(detail):
         print(detail, flush=True)
-        write_json(Path(work_dir) / 'asr_progress.json', dict(stage='processing', detail=detail))
+        report_asr(work_dir, detail)
     def load(name):
         title = 'Whisper large-v3' if name == 'v3' else 'Whisper turbo'
         model_event(work_dir, f'正在加载识别模型（{title}）')

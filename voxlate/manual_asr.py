@@ -2,7 +2,7 @@
 import gc
 from pathlib import Path
 
-from .common import write_json
+from .progress import report_asr
 from .model_lifecycle import model_event
 
 
@@ -10,8 +10,7 @@ def transcribe_blocks(blocks, cfg, directory):
     def progress(index, title):
         if len(blocks) == 1:
             return
-        write_json(Path(directory)/'asr_progress.json', dict(stage='processing',
-            detail=f'识别（{title}）：{index}/{len(blocks)} 句'))
+        report_asr(directory, f'识别（{title}）：{index}/{len(blocks)} 句')
     if Path(cfg['model_path']).name == 'qwen3-asr-1.7b' and not cfg.get('combined'):
         return qwen_blocks(blocks, cfg, directory, progress)
     from .asr import configure_cuda

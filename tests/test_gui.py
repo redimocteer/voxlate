@@ -146,6 +146,117 @@ except ImportError:
 
 @unittest.skipUnless(HAS_QT, "Install requirements-gui.txt for GUI tests")
 class GuiTests(unittest.TestCase):
+    def test_external_voice_import_cancel_and_project_persistence(self):
+        from test_pipeline import tone
+        from PySide6.QtWidgets import QDialog
+        video=Path(self.directory.name)/'synthetic.mp4'; video.write_bytes(b'fixture')
+        path=self.window.default_project_path(video)
+        write_json(path,dict(schema_version=1,name='voxlate',input=str(video),duration=3,voice_mode='individual',
+            segments=[dict(id=1,start=0,end=1,source_text='Hello',target_text='你好')]))
+        self.window.load_project(path)
+        with patch('voxlate.gui.QFileDialog.getOpenFileName',return_value=('','')), patch.object(self.window,'start_task') as start:
+            self.window.open_external_voice()
+            start.assert_not_called()
+            self.assertTrue(self.window.individual_voice.isChecked())
+        reference=path.parent/'references'/'synthetic.wav'; tone(reference,3)
+        data=dict(audio=str(reference),key='synthetic',label='reference.wav',start=0,end=3)
+        player=Mock(selected_range=[0,3]); player.exec.return_value=QDialog.DialogCode.Accepted
+        def run(action, complete, **kwargs):
+            complete(action(lambda text:None))
+        with patch('voxlate.gui.QFileDialog.getOpenFileName',return_value=('reference.wav','')), \
+                patch('voxlate.external_voice.reference_info',return_value=dict(duration=3,video=False)), \
+                patch('voxlate.external_voice.import_reference',return_value=data) as imported, \
+                patch('voxlate.player.VideoPlayer',return_value=player), patch.object(self.window,'start_task',side_effect=run):
+            self.window.open_external_voice()
+            self.app.processEvents()
+        imported.assert_called_once()
+        self.assertTrue(self.window.external_voice.isChecked())
+        self.assertTrue(self.window.dub_button.isEnabled())
+        self.assertEqual(read_json(path)['external_voice'],data)
+        self.window.individual_voice.click()
+        self.assertEqual(read_json(path)['external_voice'],data)
+        self.window.external_voice.click()
+        self.window.load_project(path)
+        self.assertTrue(self.window.external_voice.isChecked())
+        reference.unlink()
+        self.window.refresh_voice_fields()
+        self.assertFalse(self.window.dub_button.isEnabled())
+        with patch.object(QMessageBox,'information') as info, patch.object(self.window,'start_task') as start:
+            self.window.start_pipeline('auto')
+            info.assert_called_once()
+            start.assert_not_called()
+
+    def test_voice_manager_compact_icons_and_export_destination(self):
+        from voxlate.role_dialog import RoleDialog
+        from test_roles import fixture
+        project=fixture()
+        project['input']=str(Path(self.directory.name)/'synthetic.mp4')
+        target=Path(self.directory.name)/'voice.wav'
+        export=Mock(return_value=str(target))
+        dialog=RoleDialog(project,Mock(),export_reference=export)
+        try:
+            self.assertEqual(dialog.windowTitle(),'音色管理')
+            self.assertEqual(dialog.table.columnWidth(0),128)
+            self.assertEqual(dialog.table.columnCount(),5)
+            for column in (2,3,4):
+                button=dialog.table.cellWidget(0,column).button
+                self.assertEqual(button.text(),'')
+                self.assertFalse(button.icon().isNull())
+                self.assertEqual(button.size().width(),30)
+            with patch('voxlate.role_dialog.QFileDialog.getSaveFileName',return_value=('','')):
+                dialog.export_voice(0)
+                export.assert_not_called()
+            with patch('voxlate.role_dialog.QFileDialog.getSaveFileName',return_value=(str(target),'')) as picker:
+                dialog.export_voice(0)
+            default=Path(picker.call_args.args[2])
+            self.assertEqual(default.parent,Path(project['input']).parent)
+            self.assertEqual(default.suffix,'.wav')
+            deadline=time.monotonic()+5
+            while dialog.export_worker is not None and time.monotonic()<deadline:
+                self.app.processEvents();time.sleep(.01)
+            self.assertIsNone(dialog.export_worker)
+            export.assert_called_once()
+            self.assertEqual(export.call_args.args[0]['id'],1)
+            self.assertEqual(export.call_args.args[1],str(target))
+            self.assertIn('已导出',dialog.status.text())
+        finally:
+            dialog.reject(); dialog.deleteLater(); self.app.processEvents()
+
+    def test_overwrite_buttons_are_chinese_and_cancel_is_default(self):
+        original_exec = QMessageBox.exec
+        for label in ('确定', '取消', None):
+            def choose(dialog):
+                self.assertEqual({b.text() for b in dialog.buttons()}, {'确定', '取消'})
+                self.assertEqual(dialog.defaultButton().text(), '取消')
+                self.assertEqual(dialog.escapeButton().text(), '取消')
+                QTimer.singleShot(0, dialog.reject if label is None else
+                    next(b for b in dialog.buttons() if b.text() == label).click)
+                return original_exec(dialog)
+            with patch.object(QMessageBox, 'exec', new=choose):
+                self.assertEqual(self.window.confirm_overwrite('将覆盖现有结果。'), label == '确定')
+
+    def test_separation_confirms_only_existing_results(self):
+        video = Path(self.directory.name)/'synthetic.mp4'
+        video.write_bytes(b'fixture')
+        path = self.window.default_project_path(video)
+        write_json(path, dict(schema_version=1, name='voxlate', input=str(video), duration=2,
+                             segments=[], stages={}))
+        self.window.load_project(path)
+        for existing, accepted in ((False, False), (True, False), (True, True)):
+            self.window.project['stages'] = {'separate': {'key': 'saved'}} if existing else {}
+            before = path.read_bytes()
+            with patch.object(self.window, 'confirm_overwrite', return_value=accepted) as confirm, \
+                    patch.object(self.window, 'start_task') as start:
+                self.window.start_pipeline('separate')
+            self.assertEqual(confirm.called, existing)
+            if existing and not accepted:
+                start.assert_not_called()
+                self.assertEqual(path.read_bytes(), before)
+            else:
+                with patch('voxlate.gui.check_resources', return_value=[]), patch('voxlate.gui.VideoDubPipeline') as pipeline:
+                    start.call_args.args[0](lambda text: None)
+                    self.assertEqual(pipeline.return_value.process.call_args.kwargs['force_separation'], existing)
+
     def test_dubbing_scope_reuses_valid_audio_or_forces_regeneration(self):
         from test_pipeline import tone
         from voxlate.dubbing_state import voice_key
@@ -166,6 +277,75 @@ class GuiTests(unittest.TestCase):
             with patch('voxlate.gui.check_resources',return_value=[]),patch('voxlate.gui.VideoDubPipeline') as pipeline:
                 start.call_args.args[0](lambda text:None)
                 self.assertEqual(pipeline.return_value.process.call_args.kwargs['force_tts'],scope=='all')
+
+    def test_selected_processing_uses_union_of_text_and_time_cells(self):
+        from PySide6.QtWidgets import QTableWidgetSelectionRange
+        video=Path(self.directory.name)/'synthetic.mp4'; video.write_bytes(b'fixture')
+        path=self.window.default_project_path(video)
+        project=dict(schema_version=1,name='voxlate',input=str(video),duration=6,voice_mode='individual',
+            segments=[dict(id=i+1,start=i*2,end=i*2+1,source_text='Hello',target_text='你好' if i<2 else '',enabled=i!=1) for i in range(3)])
+        write_json(path,project); self.window.load_project(path)
+        for column in (0,1,2):
+            self.window.table.clearSelection()
+            self.window.table.setRangeSelected(QTableWidgetSelectionRange(0,column,1,column),True)
+            self.assertEqual(self.window.translate_button.text(),'翻译所选')
+            self.assertEqual(self.window.dub_button.text(),'配音所选')
+            self.assertTrue(self.window.dub_button.isEnabled())
+            with patch.object(self.window,'start_pipeline') as start:
+                self.window.translate_button.click()
+                start.assert_called_once_with('translate',sentence_ids=[1,2],batch_selection=True)
+            with patch.object(self.window,'start_pipeline') as start:
+                self.window.dub_button.click()
+                start.assert_called_once_with('dub',sentence_ids=[1],batch_selection=True)
+        self.window.table.setRangeSelected(QTableWidgetSelectionRange(0,0,0,2),True)
+        self.assertEqual(self.window.selected_sentence_ids(),[1,2])
+        self.window.table.clearSelection()
+        self.window.table.setRangeSelected(QTableWidgetSelectionRange(1,1,1,1),True)
+        self.assertFalse(self.window.dub_button.isEnabled())
+        self.window.table.clearSelection()
+        self.assertEqual(self.window.translate_button.text(),'全文翻译')
+        self.assertEqual(self.window.dub_button.text(),'全文配音')
+
+    def test_selected_dubbing_scope_only_checks_selected_audio(self):
+        from test_pipeline import tone
+        from voxlate.dubbing_state import voice_key
+        video=Path(self.directory.name)/'synthetic.mp4'; video.write_bytes(b'fixture')
+        path=self.window.default_project_path(video); audio=path.parent/'tts.wav'; tone(audio,.2)
+        project=dict(schema_version=1,name='voxlate',input=str(video),duration=4,voice_mode='individual',
+            segments=[dict(id=1,start=0,end=1,source_text='Hello',target_text='你好',tts_text='你好',tts_audio=str(audio)),
+                      dict(id=2,start=2,end=3,source_text='Welcome',target_text='')])
+        project['segments'][0]['voice_key']=voice_key(project,self.window.cfg,project['segments'][0])
+        write_json(path,project); self.window.load_project(path)
+        with patch.object(self.window,'choose_dubbing_scope',return_value='missing') as choose,patch.object(self.window,'start_task') as start:
+            self.window.start_pipeline('dub',sentence_ids=[1],batch_selection=True)
+            choose.assert_called_once_with(selected=True); start.assert_not_called()
+        with patch.object(self.window,'choose_dubbing_scope',return_value='all'),patch.object(self.window,'start_task') as start:
+            self.window.start_pipeline('dub',sentence_ids=[1],batch_selection=True)
+        with patch('voxlate.gui.check_resources',return_value=[]),patch('voxlate.gui.VideoDubPipeline') as pipeline:
+            start.call_args.args[0](lambda text:None)
+            options=pipeline.return_value.process.call_args.kwargs
+            self.assertEqual(options['sentence_ids'],[1]); self.assertTrue(options['force_tts'])
+        with patch.object(self.window,'choose_dubbing_scope') as choose,patch.object(self.window,'start_task'):
+            self.window.start_pipeline('dub',sentence_ids=[1],force_tts=True)
+            choose.assert_not_called()
+
+    def test_selected_translation_overwrite_scope_does_not_leak_to_other_rows(self):
+        video=Path(self.directory.name)/'synthetic.mp4'; video.write_bytes(b'fixture')
+        path=self.window.default_project_path(video)
+        write_json(path,dict(schema_version=1,name='voxlate',input=str(video),duration=4,
+            segments=[dict(id=1,start=0,end=1,source_text='Hello',target_text='你好'),
+                      dict(id=2,start=2,end=3,source_text='Welcome',target_text='')]))
+        self.window.load_project(path)
+        with patch.object(self.window,'choose_translation_scope',return_value='missing') as choose,patch.object(self.window,'start_task') as start:
+            self.window.start_pipeline('translate',sentence_ids=[1],batch_selection=True)
+            choose.assert_called_once_with(selected=True)
+            start.assert_not_called()
+        with patch.object(self.window,'choose_translation_scope') as choose,patch.object(self.window,'start_task') as start:
+            self.window.start_pipeline('translate',sentence_ids=[2],batch_selection=True)
+            choose.assert_not_called()
+        with patch('voxlate.gui.check_resources',return_value=[]),patch('voxlate.gui.VideoDubPipeline') as pipeline:
+            start.call_args.args[0](lambda text:None)
+            self.assertEqual(pipeline.return_value.process.call_args.kwargs['sentence_ids'],[2])
 
     def test_translation_scope_defaults_to_fill_and_dispatches_both_choices(self):
         from PySide6.QtCore import QTimer
@@ -526,7 +706,7 @@ class GuiTests(unittest.TestCase):
         with patch.object(QMessageBox, 'information') as message:
             dialog.accept_roles()
             self.assertTrue(message.called)
-        self.assertFalse(dialog.table.cellWidget(0,3).isEnabled())
+        self.assertFalse(dialog.table.cellWidget(0,4).button.isEnabled())
         dialog.table.cellWidget(0,0).setText('改名')
         dialog.accept_roles()
         self.assertEqual(dialog.result(), dialog.DialogCode.Accepted)
@@ -1578,7 +1758,7 @@ class GuiTests(unittest.TestCase):
                                     ('translate', ['asr_large_model', 'separator', 'tts']),
                                     ('recognize', ['hy7_model', 'llm_engine', 'tts', 'separator', 'separator_model']),
                                     ('auto', ['asr_large_model', 'separator'])]:
-            with self.subTest(stage=stage), patch.object(QMessageBox, 'question', return_value=QMessageBox.StandardButton.Yes), patch.object(self.window, 'start_task') as start:
+            with self.subTest(stage=stage), patch.object(self.window, 'confirm_overwrite', return_value=True), patch.object(self.window, 'start_task') as start:
                 self.window.start_pipeline(stage)
                 results = [ResourceStatus(k, k, False, '', '', required=True) for k in missing_keys]
                 with patch('voxlate.gui.check_resources', return_value=results), patch('voxlate.gui.VideoDubPipeline') as pipeline:
@@ -1602,13 +1782,13 @@ class GuiTests(unittest.TestCase):
         self.window.load_project(path)
         before = path.read_bytes()
         for stage, label in [('recognize', '重新识别')]:
-            with patch.object(QMessageBox, 'question', return_value=QMessageBox.StandardButton.No) as question, patch.object(self.window, 'start_task') as start:
+            with patch.object(self.window, 'confirm_overwrite', return_value=False) as question, patch.object(self.window, 'start_task') as start:
                 self.window.start_pipeline(stage)
-                self.assertIn(label, question.call_args.args[2])
+                self.assertIn(label, question.call_args.args[0])
                 start.assert_not_called()
                 self.assertEqual(path.read_bytes(), before)
         for stage in ('recognize', 'translate', 'dub'):
-            with patch.object(self.window,'choose_translation_scope',return_value='all'), patch.object(self.window,'choose_dubbing_scope',return_value='all'), patch.object(QMessageBox, 'question', return_value=QMessageBox.StandardButton.Yes), patch.object(self.window, 'start_task') as start:
+            with patch.object(self.window,'choose_translation_scope',return_value='all'), patch.object(self.window,'choose_dubbing_scope',return_value='all'), patch.object(self.window, 'confirm_overwrite', return_value=True), patch.object(self.window, 'start_task') as start:
                 self.window.start_pipeline(stage)
             with patch('voxlate.gui.check_resources', return_value=[]), patch('voxlate.gui.VideoDubPipeline') as pipeline:
                 start.call_args.args[0](lambda text: None)
@@ -1653,12 +1833,12 @@ class GuiTests(unittest.TestCase):
         write_json(path,project)
         self.window.load_project(path)
         before = path.read_bytes()
-        with patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.No) as question, patch.object(self.window,'start_task') as start:
+        with patch.object(self.window,'confirm_overwrite',return_value=False) as question, patch.object(self.window,'start_task') as start:
             self.window.start_pipeline('recognize')
-            self.assertIn('将覆盖手动分句',question.call_args.args[2])
+            self.assertIn('将覆盖手动分句',question.call_args.args[0])
             start.assert_not_called()
             self.assertEqual(path.read_bytes(),before)
-        with patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.Yes), patch.object(self.window,'start_task') as start:
+        with patch.object(self.window,'confirm_overwrite',return_value=True), patch.object(self.window,'start_task') as start:
             self.window.start_pipeline('recognize')
         with patch('voxlate.gui.check_resources',return_value=[]), patch('voxlate.gui.VideoDubPipeline') as pipeline:
             start.call_args.args[0](lambda text:None)
@@ -1705,7 +1885,32 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(self.window.clear_project_button.isEnabled())
         self.assertFalse(self.window.dub_button.isEnabled())
 
-    def test_sentence_actions_red_record_before_play_and_stale_audio_blocks_export(self):
+    def test_partial_export_confirmation_can_cancel_or_pass_permission_without_models(self):
+        video=Path(self.directory.name)/'synthetic.mp4';video.write_bytes(b'fixture')
+        path=self.window.default_project_path(video)
+        project=dict(schema_version=1,name='voxlate',input=str(video),duration=4,voice_mode='individual',
+            segments=[dict(id=1,start=0,end=1,source_text='Hello',target_text=''),
+                      dict(id=2,start=2,end=3,source_text='Welcome',target_text='',enabled=False)])
+        write_json(path,project);self.window.load_project(path)
+        self.assertTrue(self.window.export_button.isEnabled())
+        before=path.read_bytes()
+        with patch.object(self.window,'confirm_original_export',return_value=False) as confirm,patch.object(self.window,'start_task') as start:
+            self.window.start_pipeline('export')
+            confirm.assert_called_once_with(1);start.assert_not_called()
+            self.assertEqual(path.read_bytes(),before)
+        with patch.object(self.window,'confirm_original_export',return_value=True),patch.object(self.window,'start_task') as start:
+            self.window.start_pipeline('export')
+        with patch('voxlate.gui.check_resources') as resources,patch('voxlate.gui.VideoDubPipeline') as pipeline:
+            start.call_args.args[0](lambda text:None)
+            resources.assert_not_called()
+            options=pipeline.return_value.process.call_args.kwargs
+            self.assertTrue(options['export_only']);self.assertTrue(options['allow_missing_dubbing'])
+        self.window.toggle_sentence(0,6)
+        with patch.object(self.window,'confirm_original_export') as confirm,patch.object(self.window,'start_task'):
+            self.window.start_pipeline('export')
+            confirm.assert_not_called()
+
+    def test_sentence_actions_red_record_before_play_and_stale_audio_allows_confirmed_export(self):
         from test_pipeline import tone
         from voxlate.dubbing_state import voice_key
         from PySide6.QtMultimedia import QMediaPlayer
@@ -1733,7 +1938,7 @@ class GuiTests(unittest.TestCase):
             widget.play.click()
             self.assertEqual(Path(self.window.sentence_player.source().toLocalFile()), audio.resolve())
         self.window.table.item(0, 2).setText('您好')
-        self.assertFalse(self.window.export_button.isEnabled())
+        self.assertTrue(self.window.export_button.isEnabled())
         self.assertTrue(self.window.dub_button.isEnabled())
         self.assertTrue(widget.play.isEnabled(), 'The last audio can still be previewed')
         self.assertIn('上次配音', widget.play.toolTip())

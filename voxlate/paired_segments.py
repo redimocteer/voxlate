@@ -2,18 +2,17 @@
 import copy
 
 from .common import VoxlateError
-from .segmentation import MAX_SPAN, MIN_BLOCK, MAX_FULL_SENTENCES, validate_blocks
+from .segmentation import MIN_BLOCK, MAX_FULL_SENTENCES, validate_blocks
 
 COLORS = ('#3466d6', '#008675', '#a45aba', '#bf7026', '#478e36',
           '#c44878', '#547ba0', '#887629', '#775bd3', '#ad5044')
-MAX_CUTS = 20
 
 
 class PairedSegmentPlan:
     def __init__(self, project, first, last, blocks=None, *, full=False):
         self.project = project
         self.full = full
-        self.max_sentences = MAX_FULL_SENTENCES if full else 10
+        self.max_sentences = MAX_FULL_SENTENCES
         rows = project['segments']
         self.original_rows = {(row['start'],row['end']):row for row in rows}
         self.edits = {}
@@ -43,8 +42,10 @@ class PairedSegmentPlan:
     def check(self):
         if len(self.cuts) > self.max_sentences*2:
             raise VoxlateError(f'一次最多编辑 {self.max_sentences} 句，请缩小选区。')
-        if not self.full and self.end-self.start > MAX_SPAN:
-            raise VoxlateError('一次最多编辑 10 分钟，请缩小选区。')
+
+    @property
+    def paged_waveform(self):
+        return self.full or self.end-self.start > 30
 
     @property
     def pairs(self):
@@ -98,6 +99,8 @@ class PairedSegmentPlan:
                 original = self.original_rows.get((start,end))
                 block = dict(start=start, end=end, enabled=original.get('enabled', True) if original else True,
                              text='', manual_text=False, omit_row=False)
+                if original and original.get('manual_boundary') and not original.get('target_text', '').strip():
+                    block.update(text=original.get('source_text', ''), manual_text=bool(original.get('source_text', '').strip()))
                 block.update(self.edits.get((start,end), {}))
                 blocks.append(block)
             cursor = end

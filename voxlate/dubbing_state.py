@@ -11,8 +11,9 @@ def automatic_reference(project):
 
 
 def reference_input_key(project):
-    return digest('recommend-v1', project.get('stages', {}).get('separate', {}).get('key'),
+    key = digest('recommend-v1', project.get('stages', {}).get('separate', {}).get('key'),
                   [(s['id'], s['start'], s['end']) for s in project.get('segments', [])])
+    return digest(key, project['separation_revision']) if project.get('separation_revision') else key
 
 
 def recommended_reference(project, ident):
@@ -25,7 +26,9 @@ def recommended_reference(project, ident):
 def voice_selection(project):
     segments = (project or {}).get('segments', [])
     mode = (project or {}).get('voice_mode', 'uniform')
-    mode = mode if mode in ('uniform', 'individual', 'roles') else 'uniform'
+    mode = mode if mode in ('uniform', 'individual', 'roles', 'external') else 'uniform'
+    if mode == 'external':
+        return mode, None
     ident = (project or {}).get('reference_sentence_id')
     if automatic_reference(project):
         saved = (project or {}).get('reference_recommendation', {})
@@ -52,6 +55,9 @@ def voice_key(project, cfg, segment=None):
                       selected['start'], selected['end'])
     if 'voice_mode' in project:
         mode, ident = voice_selection(project)
+        if mode == 'external':
+            data = project.get('external_voice')
+            return digest(cfg['tts'], mode, data.get('key') if isinstance(data, dict) else None)
         if mode == 'roles':
             from .roles import reference_segment
             if segment is None:
@@ -139,3 +145,14 @@ def dubbing_ready(project, cfg):
         return False
     contexts = voice_contexts(project,cfg)
     return all(sentence_ready(s, contexts[s['id']]) for s in project['segments'] if s.get('enabled', True))
+
+
+def missing_dubbing_ids(project, cfg, *, verify_audio=False):
+    """Export fallback includes outdated takes; disabled rows already keep source audio."""
+    if not project:
+        return []
+    from .tts import valid_wav
+    contexts = voice_contexts(project, cfg)
+    return [s['id'] for s in project.get('segments', []) if s.get('enabled', True) and
+            (not sentence_ready(s, contexts[s['id']]) or not s.get('tts_key') or
+             (verify_audio and not valid_wav(s.get('tts_audio', ''))))]

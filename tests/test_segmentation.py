@@ -134,7 +134,53 @@ class PlanTests(unittest.TestCase):
 
 
 class CommitTests(unittest.TestCase):
+    def test_apply_only_saves_ranges_without_models_then_editor_can_finish(self):
+        from voxlate.paired_segments import PairedSegmentPlan
+        from voxlate.segmentation import segmentation_needs_models
+        plan=PairedSegmentPlan(self.project,0,0)
+        start,end=plan.pairs[0]; plan.move_cut(1,(start+end)/2)
+        runner=Mock(side_effect=AssertionError('save-only loaded a model'))
+        result=apply_segmentation(self.path,digest(self.project),self.integration.cfg,plan.blocks,
+            process_text=False,runner=runner)
+        saved=read_json(self.path); runner.assert_not_called()
+        self.assertEqual(saved['segments'][0]['source_text'],'')
+        self.assertTrue(saved['segments'][0]['pending_recognition'])
+        self.assertNotIn('tts_audio',saved['segments'][0])
+        for key in ('source_text','target_text','tts_audio'):
+            self.assertEqual(saved['segments'][1][key],self.project['segments'][1][key])
+        reopened=PairedSegmentPlan(saved,0,0)
+        self.assertTrue(segmentation_needs_models(saved,reopened.blocks))
+        apply_segmentation(self.path,digest(saved),self.integration.cfg,reopened.blocks,runner=self.runner)
+        finished=read_json(self.path)['segments'][0]
+        self.assertTrue(finished['source_text']); self.assertTrue(finished['target_text'])
+        self.assertNotIn('pending_recognition',finished)
+
+    def test_saved_empty_ranges_can_be_recognized_by_selected_translation(self):
+        from voxlate.paired_segments import PairedSegmentPlan
+        plan=PairedSegmentPlan(self.project,0,0)
+        start,end=plan.pairs[0]; plan.move_cut(1,(start+end)/2)
+        apply_segmentation(self.path,digest(self.project),self.integration.cfg,plan.blocks,process_text=False,
+            runner=Mock(side_effect=AssertionError('model loaded')))
+        saved=read_json(self.path); outside=copy.deepcopy(saved['segments'][1]);calls=[]
+        def runner(kind,job):
+            calls.append(kind)
+            if kind=='asr':
+                self.assertEqual(len(job['manual_blocks']),1)
+                return ['A new sentence.']
+            self.assertEqual(kind,'translator');self.assertEqual(job['texts'],['A new sentence.'])
+            return ['新句子。']
+        pipeline_tests.VideoDubPipeline(self.integration.cfg,runner).process(self.integration.video,self.integration.output,
+            self.path.parent,stop_after='translate',translate_only=True,sentence_ids=[1])
+        result=read_json(self.path)
+        self.assertEqual(calls,['asr','translator'])
+        self.assertEqual(result['segments'][0]['source_text'],'A new sentence.')
+        self.assertNotIn('pending_recognition',result['segments'][0])
+        self.assertEqual(result['segments'][1],outside)
+
     def setUp(self):
+        discard = patch('voxlate.segmentation_dialog.SegmentationDialog.confirm_discard', return_value=True)
+        discard.start()
+        self.addCleanup(discard.stop)
         self.integration = pipeline_tests.PipelineIntegration('test_render_resume_and_single_sentence_edit')
         self.integration.setUp()
         f = self.integration
@@ -487,7 +533,7 @@ class CommitTests(unittest.TestCase):
                 self.assertEqual(window.reference_sentence.value(),expected_count)
                 if drop_empty:
                     self.assertIn('已舍弃并保留原声',information.call_args.args[2])
-                self.assertFalse(window.export_button.isEnabled())
+                self.assertTrue(window.export_button.isEnabled())
                 self.assertFalse((self.path.parent/'.temp/segmentation-draft.json').exists())
         finally:
             for dialog in window.findChildren(SegmentationDialog):
@@ -504,6 +550,11 @@ class CommitTests(unittest.TestCase):
 
 
 class EditorTests(unittest.TestCase):
+    def setUp(self):
+        discard = patch('voxlate.segmentation_dialog.SegmentationDialog.confirm_discard', return_value=True)
+        discard.start()
+        self.addCleanup(discard.stop)
+
     @classmethod
     def setUpClass(cls):
         from PySide6.QtWidgets import QApplication

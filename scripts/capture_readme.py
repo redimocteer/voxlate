@@ -153,6 +153,7 @@ def main():
         full_editor.select_block(2)
         full_editor.show(); wait_video(full_editor)
         capture(full_editor, 'segmentation-full.png')
+        full_editor.initial_plan = full_editor.plan.snapshot()
         full_editor.close()
         full_editor.deleteLater()
 
